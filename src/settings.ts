@@ -27,7 +27,15 @@ export function defaultSettingsPath(dataDir: string): string {
   return join(dataDir, SETTINGS_FILE)
 }
 
-/** Normalize an origin: must be http(s), no trailing slash. Throws on invalid. */
+/**
+ * Normalize an API base URL: must be http(s), no trailing slash, path kept.
+ *
+ * The path is load-bearing, not a mistake to be trimmed: the gateway versions
+ * its API (`/v1`, and later `/v2`, `/v3`), so this value *is* the prefix every
+ * request is built on. The plugin appends only the resource (`/models`,
+ * `/chat/completions`), never a version of its own — an origin-only value
+ * would make a future `/v2` unreachable.
+ */
 export function normalizeBaseUrl(raw: unknown): string {
   if (typeof raw !== 'string' || raw.trim() === '') throw new Error('dsh-magpie-connect: baseUrl must be a non-empty http(s) URL')
   const trimmed = raw.trim()
@@ -40,7 +48,9 @@ export function normalizeBaseUrl(raw: unknown): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`dsh-magpie-connect: baseUrl must use http(s): ${trimmed}`)
   }
-  return url.origin
+  // Query and fragment are never part of a base URL and would corrupt every
+  // appended path; drop them rather than storing a value the wire ignores.
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
 /** Normalize a hidden-model list: strings only, deduped, order kept. */

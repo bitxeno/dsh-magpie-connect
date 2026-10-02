@@ -13,11 +13,18 @@ import {
 } from '../src/settings.ts'
 import { ModelCatalog } from '../src/adapter/catalog.ts'
 
-test('normalizeBaseUrl accepts http(s) origins and strips paths', () => {
+test('normalizeBaseUrl keeps the version path and strips only a trailing slash', () => {
   assert.equal(normalizeBaseUrl('http://api.lan'), 'http://api.lan')
   assert.equal(normalizeBaseUrl('http://api.lan/'), 'http://api.lan')
-  assert.equal(normalizeBaseUrl('http://api.lan/v1'), 'http://api.lan')
-  assert.equal(normalizeBaseUrl('https://example.com:8080/base/'), 'https://example.com:8080')
+  // The version segment is the user's to choose: it must survive a save, so a
+  // gateway on /v2 or /v3 stays reachable by editing one string.
+  assert.equal(normalizeBaseUrl('http://api.lan/v1'), 'http://api.lan/v1')
+  assert.equal(normalizeBaseUrl('http://api.lan/v1/'), 'http://api.lan/v1')
+  assert.equal(normalizeBaseUrl('http://api.lan/v2'), 'http://api.lan/v2')
+  assert.equal(normalizeBaseUrl('https://example.com:8080/api/v3/'), 'https://example.com:8080/api/v3')
+  // Query/fragment are never part of a base URL and would corrupt appended paths.
+  assert.equal(normalizeBaseUrl('http://api.lan/v1?x=1'), 'http://api.lan/v1')
+  assert.equal(normalizeBaseUrl('http://api.lan/v1#frag'), 'http://api.lan/v1')
   assert.throws(() => normalizeBaseUrl(''), /non-empty/)
   assert.throws(() => normalizeBaseUrl('not a url'), /not a valid URL/)
   assert.throws(() => normalizeBaseUrl('ftp://x'), /http\(s\)/)
@@ -141,13 +148,13 @@ test('catalog setBaseUrl switches the refresh origin', async () => {
     seen.push(String(url))
     return new Response(JSON.stringify(gatewayBody), { status: 200, headers: { 'content-type': 'application/json' } })
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: impl, baseUrl: 'http://one' })
+  const catalog = new ModelCatalog({ fetchImpl: impl, baseUrl: 'http://one/v1' })
   try {
     await catalog.refreshOnce()
-    catalog.setBaseUrl('http://two/')
-    assert.equal(catalog.baseUrl, 'http://two')
+    catalog.setBaseUrl('http://two/v2/')
+    assert.equal(catalog.baseUrl, 'http://two/v2')
     await catalog.refreshOnce()
-    assert.ok(seen.some((url) => url.startsWith('http://two/v1/models')))
+    assert.ok(seen.some((url) => url.startsWith('http://two/v2/models')))
   } finally {
     catalog.stop()
   }

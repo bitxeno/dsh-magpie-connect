@@ -19,7 +19,7 @@ import { withStallTimeout } from './watchdog.ts'
 
 /**
  * Magpie LAN gateway adapter: registers as a DSH LlmAdapter and streams
- * directly from `{baseUrl}/v1` — chat completions for most models plus the
+ * directly from the configured API root (e.g. `…/v1`) — chat completions for most models plus the
  * Responses API for responses-only models (Muse Spark / Codex / Grok lanes).
  *
  * Adapter contract: dsh-llm LlmAdapter (providerInfo/listModels/resolveModel/
@@ -38,7 +38,7 @@ export interface PiProviderLike {
 
 /** Live endpoint read per request so the settings page applies without restart. */
 export interface RuntimeEndpoint {
-  /** Gateway origin, e.g. `http://api.lan` (no trailing slash). */
+  /** Versioned API root, e.g. `http://api.lan/v1` (no trailing slash). */
   baseUrl(): string
   /** Bearer key sent to the gateway. */
   apiKey(): string
@@ -187,7 +187,7 @@ export class MagpieAdapter {
   readonly #provider: PiProviderLike
   readonly #providerId: string
   readonly #displayName: string
-  /** Static fallback origin; the live settings page overrides per request. */
+  /** Static fallback API root; the live settings page overrides per request. */
   readonly #fallbackBaseUrl: string
   readonly #fallbackApiKey: string
   readonly #runtime?: RuntimeEndpoint
@@ -229,8 +229,11 @@ export class MagpieAdapter {
     this.#catalog = catalog
     this.#providerId = options.providerId ?? PROVIDER_ID
     this.#displayName = options.displayName ?? (options.providerId ?? DEFAULT_DISPLAY_NAME)
-    const origin = (options.magpieBaseUrl ?? options.baseUrl ?? '').replace(/\/+$/, '')
-    this.#fallbackBaseUrl = origin === '' ? '' : `${origin}/v1`
+    // The configured value is already the versioned API root (`…/v1`), which is
+    // exactly what pi-ai's `baseUrl` expects: it appends `/chat/completions`
+    // and `/responses` itself. Synthesizing a version here would double it and
+    // would hard-code `/v1` against a gateway that later moves to `/v2`.
+    this.#fallbackBaseUrl = (options.magpieBaseUrl ?? options.baseUrl ?? '').replace(/\/+$/, '')
     this.#fallbackApiKey = options.apiKey ?? DEFAULT_API_KEY
     this.#runtime = options.runtime
     this.#maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES
@@ -335,14 +338,17 @@ export class MagpieAdapter {
     }
   }
 
-  /** Fail fast when no gateway origin is configured (picker stays empty too). */
-  #requireOrigin(): string {
-    const raw = this.#runtime?.baseUrl() ?? this.#fallbackBaseUrl.replace(/\/v1$/, '')
-    const origin = raw.replace(/\/+$/, '')
-    if (origin === '') {
+  /**
+   * Fail fast when no gateway API URL is configured (picker stays empty too).
+   * @returns the versioned API root, trailing slash stripped.
+   */
+  #requireBaseUrl(): string {
+    const raw = this.#runtime?.baseUrl() ?? this.#fallbackBaseUrl
+    const baseUrl = raw.replace(/\/+$/, '')
+    if (baseUrl === '') {
       throw new Error('dsh-magpie-connect: Magpie gateway API URL is not configured — open Settings → Magpie and set it')
     }
-    return origin
+    return baseUrl
   }
 
   /** Effective bearer key for this request. */
@@ -361,7 +367,7 @@ export class MagpieAdapter {
    * instead of hanging to the SDK/harness timeout.
    */
   async *stream(options: HarnessGenerateOptions): AsyncGenerator<HarnessChunk> {
-    const origin = this.#requireOrigin()
+    const baseUrl = this.#requireBaseUrl()
     const endpoints = this.#catalog.getEntry?.(options.model)?.nativeEndpoints ?? []
     const hasImage = contentHasImage(options.messages)
     if (hasImage && !(this.#catalog.supportsImage?.(options.model) ?? false)) {
@@ -370,7 +376,7 @@ export class MagpieAdapter {
     const context = hasImage
       ? await this.#imageContext(options, endpoints)
       : toPiContext(options, endpoints)
-    const model = toPiModel(this.#providerId, `${origin}/v1`, options.model, this.#catalog)
+    const model = toPiModel(this.#providerId, baseUrl, options.model, this.#catalog)
     // Linked controller: the watchdog aborts the upstream on stall, while a
     // harness abort (user stop / host timeout) still propagates through.
     const controller = new AbortController()
