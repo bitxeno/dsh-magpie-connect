@@ -4,6 +4,10 @@
   "version": "0.2.0",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bitxeno/dsh-magpie-connect.git"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -40,6 +44,7 @@
   ],
   "scripts": {
     "build": "node build.mjs",
+    "deploy:local": "pnpm run build && rsync -a --delete lib/ ~/.dsh/profiles/web/node_modules/dsh-magpie-connect/lib/ && echo 'Deployed to ~/.dsh/profiles/web/node_modules/dsh-magpie-connect/lib — restart dsh web to load the new host half'",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/*.test.ts\"",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build"
