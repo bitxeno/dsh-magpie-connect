@@ -47,6 +47,14 @@ export interface ModelListEditorProps {
   disabled: boolean
   /** Whether the connection fields are filled in enough to ask the gateway. */
   fetchable: boolean
+  /**
+   * Autosave state for the list itself. Shown inline on this card, not on the
+   * connection card above: the user's eye is here when they remove a row, and
+   * a write failure must land where the change was made.
+   */
+  status: 'idle' | 'saving' | 'saved' | 'error'
+  /** Autosave failure message, when {@link status} is `error`. */
+  failure?: string | undefined
 }
 
 const css: Record<string, Record<string, string | number>> = {
@@ -59,6 +67,7 @@ const css: Record<string, Record<string, string | number>> = {
   row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   hint: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
   error: { margin: 0, whiteSpace: 'pre-wrap', color: 'var(--dsw-alias-label-error, var(--dsw-alias-state-danger-label))' },
+  ok: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-state-success-label, var(--dsw-alias-label-primary))' },
   list: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 420, overflowY: 'auto', paddingRight: 4 },
   empty: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)', textAlign: 'center', padding: '12px 0' },
   item: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'transparent' },
@@ -104,10 +113,11 @@ function chipsFor(row: CandidateRow): Array<{ key: string; label: string }> {
  * @returns the model-list editor.
  */
 export function ModelListEditor(props: ModelListEditorProps): unknown {
-  const { models, visibleIds, onFetch, onRemove, onHiddenChange, disabled, fetchable } = props
+  const { models, visibleIds, onFetch, onRemove, onHiddenChange, disabled, fetchable, status } = props
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
-  const [failure, setFailure] = useState<string | undefined>(undefined)
+  /** Fetch/discovery failure — distinct from the autosave failure in `props.failure`. */
+  const [fetchFailure, setFetchFailure] = useState<string | undefined>(undefined)
   const [candidates, setCandidates] = useState<readonly CandidateRow[] | undefined>(undefined)
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const [candidateQuery, setCandidateQuery] = useState('')
@@ -146,18 +156,18 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
 
   const fetchModels = async (): Promise<void> => {
     setBusy(true)
-    setFailure(undefined)
+    setFetchFailure(undefined)
     try {
       const found = await onFetch()
       if (found.length === 0) {
-        setFailure(text('fetchEmpty'))
+        setFetchFailure(text('fetchEmpty'))
         return
       }
       setCandidateQuery('')
       setCandidates(found)
       setPicked(initialPicked(found, visibleIds))
     } catch (cause) {
-      setFailure(cause instanceof Error ? cause.message : String(cause))
+      setFetchFailure(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setBusy(false)
     }
@@ -226,11 +236,21 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
         ))}
       </div>
 
-      {failure === undefined ? null : (
+      {fetchFailure === undefined ? null : (
         <p role="alert" style={css.error}>
-          {failure}
+          {fetchFailure}
         </p>
       )}
+
+      {/* Autosave feedback lives on this card: the change was made here, so a
+          failure has to be readable without scrolling back up to the form. */}
+      {status === 'saving' ? <p style={css.hint}>{text('savingModels')}</p> : null}
+      {status === 'saved' ? <p style={css.ok}>{text('modelsSaved')}</p> : null}
+      {status === 'error' && props.failure !== undefined ? (
+        <p role="alert" style={css.error}>
+          {props.failure}
+        </p>
+      ) : null}
 
       <Modal
         open={candidates !== undefined}

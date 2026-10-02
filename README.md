@@ -30,9 +30,14 @@ Node.js ≥ 20; LAN route to `http://api.lan`.
 ## Settings page
 
 Settings → Magpie 网关 (sidebar): edit the API URL and API key, test the
-connection (reports how many models the endpoint serves), and tick which
+connection (reports how many models the endpoint serves), and choose which
 models appear in the model picker. Everything saves to
 `~/.dsh-magpie-connect/settings.json` and applies immediately — no restart.
+
+**两种提交时机**：地址与 Key 需要点「保存」（凭证不适合静默写入）；**模型列表的
+增删会自动保存**，不需要、也没有保存按钮。因为模型卡片在连接卡片下方，一个管全部
+的保存按钮会让"删了一行"看起来已经生效——它其实没有。自动保存通过队列串行化，
+连点多次删除不会因为响应乱序而把旧集合写回磁盘。
 
 **API 地址是带版本号的完整前缀**，例如 `http://api.lan/v1`：插件只往后拼资源名
 （`/models`、`/chat/completions`、`/responses`），**绝不自己补版本号**。网关以后
@@ -41,8 +46,9 @@ models appear in the model picker. Everything saves to
 
 **获取可用模型** 打开候选弹窗：它问的是**表单当前显示的地址与 Key**（包括还没
 保存的），所以填一个新网关是一趟而不是"保存—返回—再看"。弹窗里可搜索、可全选/
-取消全选、逐个勾选，**应用选择**把勾选结果换算成隐藏集合；网关已经不再提供的旧 id
-不受影响，保持原样。查不通也不会卡死——失败信息就显示在列表下方，行仍然可以手改。
+取消全选、逐个勾选，**应用选择**把勾选结果换算成隐藏集合。列表只显示已启用的模型，
+隐藏的只在弹窗里；行尾的「删除」即隐藏，重新加回也在弹窗。保存时会清掉网关已经
+不再提供的陈旧 id。查不通不会卡死——失败信息就显示在列表下方，行仍然可以手改。
 
 Precedence per field: settings page > `cordis.patch.yml` config > defaults.
 Hidden models only come from the page; an empty list shows everything.

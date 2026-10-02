@@ -36,6 +36,14 @@ export interface ModelListEditorProps {
     disabled: boolean;
     /** Whether the connection fields are filled in enough to ask the gateway. */
     fetchable: boolean;
+    /**
+     * Autosave state for the list itself. Shown inline on this card, not on the
+     * connection card above: the user's eye is here when they remove a row, and
+     * a write failure must land where the change was made.
+     */
+    status: 'idle' | 'saving' | 'saved' | 'error';
+    /** Autosave failure message, when {@link status} is `error`. */
+    failure?: string | undefined;
 }
 /**
  * Render the model list with its fetch action.

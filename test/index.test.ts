@@ -162,6 +162,32 @@ test('POST settings persists, hides models from the picker, and validates', asyn
   assert.equal((bad.payload as { ok: boolean }).ok, false)
 })
 
+test('an autosave that sends only hiddenModels leaves credentials untouched', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  // Establish a page-owned endpoint, then edit only the visible set — the
+  // shape every remove and adopt takes now. It must not re-commit, blank, or
+  // otherwise disturb what the credential form is holding.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: origin, apiKey: 'page-key' })
+  const autosaved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  assert.equal((autosaved.payload as { ok: boolean }).ok, true)
+  assert.deepEqual((autosaved.payload as { value: unknown }).value, {
+    baseUrl: origin,
+    apiKey: 'page-key',
+    hiddenModels: ['b'],
+  })
+
+  const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')
+  const value = (settings.payload as { value: { apiKey: string; baseUrl: string } }).value
+  assert.equal(value.apiKey, 'page-key')
+  assert.equal(value.baseUrl, origin)
+})
+
 test('test endpoint reports gateway failures instead of throwing', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())

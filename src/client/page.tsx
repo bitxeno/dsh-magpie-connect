@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { hideOne } from './model-visibility.ts'
+import { createWriteQueue } from './write-queue.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
@@ -66,6 +67,16 @@ async function request(path: string, method = 'GET', body?: unknown): Promise<un
   return payload.value
 }
 
+/**
+ * Persist one visibility change. Sends only `hiddenModels`, so an autosave can
+ * never re-commit credentials the user is still editing.
+ * @param hidden - the hidden set to store.
+ * @returns when the host has accepted it.
+ */
+async function saveHiddenModels(hidden: string[]): Promise<void> {
+  await request('/api/magpie-settings', 'POST', { hiddenModels: hidden })
+}
+
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
@@ -75,7 +86,28 @@ export function MagpieSettings(): unknown {
   const [busy, setBusy] = useState<'idle' | 'saving' | 'testing'>('idle')
   const [error, setError] = useState<string | undefined>(undefined)
   const [notice, setNotice] = useState<string | undefined>(undefined)
+  const [modelsStatus, setModelsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [modelsError, setModelsError] = useState<string | undefined>(undefined)
   const [loaded, setLoaded] = useState(false)
+
+  /**
+   * The model list autosaves: remove and adopt are discrete, deliberate acts,
+   * and the Save button lives in the card above — far enough that a user who
+   * just deleted a row would reasonably never look at it. Writes go through a
+   * queue so clicking remove several times cannot interleave responses and
+   * leave the disk holding an older set than the screen.
+   */
+  const modelsQueue = useRef(
+    createWriteQueue<string[]>((next) => saveHiddenModels(next), (outcome) => {
+      if (outcome.ok) {
+        setModelsStatus('saved')
+        setModelsError(undefined)
+        return
+      }
+      setModelsStatus('error')
+      setModelsError(outcome.error instanceof Error ? outcome.error.message : String(outcome.error))
+    }),
+  ).current
 
   useEffect(() => {
     let alive = true
@@ -109,6 +141,19 @@ export function MagpieSettings(): unknown {
     return result.models ?? []
   }
 
+  /**
+   * Commit a visibility change and queue it. Only `hiddenModels` is sent: the
+   * credential fields are the Save button's business, and an autosave must not
+   * quietly re-commit a URL or key the user is still editing.
+   */
+  const applyHidden = (next: string[]): void => {
+    setHidden(next)
+    setNotice(undefined)
+    setModelsStatus('saving')
+    setModelsError(undefined)
+    modelsQueue.push(next)
+  }
+
   const save = async (): Promise<void> => {
     setBusy('saving')
     setError(undefined)
@@ -121,6 +166,8 @@ export function MagpieSettings(): unknown {
       }
       setBaseUrl(saved.baseUrl)
       setApiKey(saved.apiKey)
+      // The response carries the pruned set; adopt it without queueing a write
+      // of its own, which would be a pointless echo of what just landed.
       setHidden(saved.hiddenModels ?? [])
       // A save can move the origin or the visible set: re-read the rows so the
       // list matches the picker the save just pushed out.
@@ -188,16 +235,12 @@ export function MagpieSettings(): unknown {
         models={models}
         visibleIds={visibleIds}
         onFetch={fetchCandidates}
-        onRemove={(id) => {
-          setHidden((prev) => hideOne(prev, id))
-          setNotice(undefined)
-        }}
-        onHiddenChange={(next) => {
-          setHidden(next)
-          setNotice(undefined)
-        }}
+        onRemove={(id) => applyHidden(hideOne(hidden, id))}
+        onHiddenChange={applyHidden}
         disabled={!loaded || working}
         fetchable={!incomplete}
+        status={modelsStatus}
+        failure={modelsError}
       />
 
       <p style={css.hint}>
