@@ -1,67 +1,88 @@
 # dsh-magpie-connect
 
-**Magpie LAN gateway models, natively inside DSH (DeepSeek Harness).**
+把 Magpie 局域网网关上的模型接进 DeepSeek Harness（DSH）的模型选择器。
 
-No extra process. Points at your configured gateway origin and serves
-every model from the gateway's `GET …/models` in the DSH model picker as provider
-`dsh-magpie-connect` (picker label `magpie`).
+装好之后，你就能在 DSH 里直接选用网关提供的模型，不需要额外跑进程，也不用配代理。
 
-> The gateway is **not** configured out of the box: set the API URL **and**
-> API key on the Settings → Magpie page (or via `cordis.patch.yml`). Both
-> are required — until then the picker stays empty and calls fail fast with
-> a "not configured" error.
+## 功能
 
-- **双接口** — `/v1/chat/completions` 与 `/v1/responses` 按模型 `native_endpoints`
-  自动分流（Muse Spark / Codex / Grok 走 responses，其余走 completions）
-- **图片识别** — 声明 `modalities.input: image` 的模型开放图片输入，经 harness
-  附件服务取字节后以 OpenAI `image_url` / `input_image` 上行
-- **思考级别选择** — 网关 `supported_reasoning_levels` 原样进 picker（含 `none` /
-  `ultra` 扩展档），直通网关不截断；过期档位按就近原则收敛，不会 400
+- **模型自动同步** — 网关列出的模型全部进入 DSH 模型选择器，想显示哪些由你决定。
+- **图片识别** — 网关声明支持图片的模型可以直接发图。
+- **思考档位** — 网关支持的思考档位（含 `none`、`ultra`）原样出现在选择器里。
+- **接口自动分流** — 网关需要哪种接口就自动用哪种，你不用管。
+- **网关不通也能用** — 选择器用本地缓存兜底，不会整个空掉。
 
-## Install
+## 安装
 
 ```sh
 dsh plugin --profile web add dsh-magpie-connect
 ```
 
-Restart `dsh web` after installing. Requires DSH with a web profile;
-Node.js ≥ 20; LAN route to `http://api.lan`.
+安装后重启 `dsh web`。
 
-## Settings page
+已有安装用同一条命令即可更新到最新版本。
 
-Settings → Magpie 网关 (sidebar): edit the API URL and API key, test the
-connection (reports how many models the endpoint serves), and choose which
-models appear in the model picker. Everything saves to
-`~/.dsh-magpie-connect/settings.json` and applies immediately — no restart.
+**需要**：DSH 的 web profile、Node.js ≥ 20、能访问网关所在局域网。
 
-**两种提交时机**：地址与 Key 需要点「保存」（凭证不适合静默写入）；**模型列表的
-增删会自动保存**，不需要、也没有保存按钮。因为模型卡片在连接卡片下方，一个管全部
-的保存按钮会让"删了一行"看起来已经生效——它其实没有。自动保存通过队列串行化，
-连点多次删除不会因为响应乱序而把旧集合写回磁盘。
+## 使用
 
-**API 地址是带版本号的完整前缀**，例如 `http://api.lan/v1`：插件只往后拼资源名
-（`/models`、`/chat/completions`、`/responses`），**绝不自己补版本号**。网关以后
-上 `/v2`、`/v3` 时，只改这一个字符串即可，不会拼成 `/v2/v1/models`。尾斜杠会被
-去掉，路径原样保留。
+### 第一步：填网关地址和 Key
 
-**获取可用模型** 打开候选弹窗：它问的是**表单当前显示的地址与 Key**（包括还没
-保存的），所以填一个新网关是一趟而不是"保存—返回—再看"。弹窗里可搜索、可全选/
-取消全选、逐个勾选，**应用选择**把勾选结果换算成隐藏集合。列表只显示已启用的模型，
-隐藏的只在弹窗里；行尾的「删除」即隐藏，重新加回也在弹窗。保存时会清掉网关已经
-不再提供的陈旧 id。查不通不会卡死——失败信息就显示在列表下方，行仍然可以手改。
+打开 **设置 → Magpie 网关**，填入两项：
 
-Precedence per field: settings page > `cordis.patch.yml` config > defaults.
-Hidden models only come from the page; an empty list shows everything.
+- **API 地址** — 网关地址，**要带版本号**，例如 `http://api.lan/v1`
+- **API Key** — 网关凭据
 
-Toggling visibility, changing the origin, or a refresh that added/dropped
-models publishes `llm/adapters-updated`, the one event DSH's picker listens
-to — the browser caches one catalog read per Host generation, so without it
-the picker keeps the stale list until `dsh web` restarts.
+两项都填好才能使用。点「保存」后，可以点「测试连接」确认通不通（会告诉你网关上有多少模型）。
 
-## Configuration
+> **地址一定要带版本段**（如 `/v1`）。插件只在你填的地址后面接资源名，不会自己补
+> 版本号——所以网关以后升级到 `/v2`、`/v3`，你只要改这一个字符串。
 
-Set the gateway URL first — either on the Settings → Magpie page (recommended,
-applies instantly) or via the profile's `cordis.patch.yml`:
+### 第二步：选择要显示的模型
+
+点 **获取可用模型**，会弹出网关当前的模型列表：勾选你想要的，再点「应用选择」。
+弹窗里可以搜索、全选、取消全选。
+
+主列表只显示已启用的模型。不想要的点该行末尾的「删除」，它就会从选择器里消失；
+想加回来，再回到弹窗里勾选。
+
+> 弹窗查的是**你当前填的地址和 Key**（哪怕还没保存），所以换网关是一趟的事。
+> 连不上也不会卡住——失败原因会显示在列表下方，已列出的行仍然可以操作。
+
+### 什么时候需要保存
+
+- **地址和 Key**：点「保存」才生效。
+- **模型增删**：**自动保存**，不用点任何按钮。
+
+## 常见问题
+
+**模型选择器是空的？**
+
+先确认地址和 Key 都填了并且已经保存，再点「测试连接」。最常见的原因是地址缺了版本段
+（比如填成 `http://api.lan`，而应该是 `http://api.lan/v1`）。
+
+**删掉的模型怎么加回来？**
+
+点「获取可用模型」，在弹窗里重新勾上，再点「应用选择」。
+
+**改了网关地址，模型列表没变？**
+
+保存后列表会重新拉取。如果新网关暂时不通，会先用本地缓存。
+
+**页面提示「未配置」？**
+
+地址和 Key 缺任意一项都会这样——此时选择器是空的，调用也会直接失败并给出提示。
+
+**发图失败？**
+
+只有网关声明支持图片的模型才能收图。如果给纯文本模型发图，会直接报错而不是静默丢弃。
+另外，图片需要通过 harness 的附件服务读取，在没有该服务的组合里也会失败。
+
+## 进阶用法
+
+### 用配置文件代替设置页
+
+除了设置页，也可以在 profile 的 `cordis.patch.yml` 里配置：
 
 ```yaml
 - id: dsh-magpie-connect
@@ -69,8 +90,8 @@ applies instantly) or via the profile's `cordis.patch.yml`:
   config:
     providerId: dsh-magpie-connect
     displayName: magpie
-    baseUrl: http://api.lan/v1  # versioned API root — include the version
-    apiKey: not-needed       # LAN gateway needs none
+    baseUrl: http://api.lan/v1   # 带版本号的完整地址
+    apiKey: not-needed           # 局域网网关通常不校验，但必须非空
     refreshSeconds: 300
     maxRetries: 2
     timeoutMs: 300000
@@ -78,56 +99,61 @@ applies instantly) or via the profile's `cordis.patch.yml`:
     idleTimeoutMs: 60000
 ```
 
-| Option | Default | Description |
+| 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `providerId` | `dsh-magpie-connect` | Provider name shown in DSH. |
-| `displayName` | `magpie` | Picker grouping label. |
-| `baseUrl` | `''` (not configured) | Versioned API root, e.g. `http://api.lan/v1`. The version is part of the value, not appended — a gateway on `/v2` is reached by changing this string. Required. |
-| `apiKey` | `''` (not configured) | Bearer key. Required, even if `/models` answers without one. |
-| `dataDir` | `~/.dsh-magpie-connect` | State dir (status, settings file, cache). |
-| `refreshSeconds` | `300` | Live catalog refresh interval. |
-| `maxRetries` | `2` | Connection-setup retries on 429/5xx. |
-| `timeoutMs` | `300000` | Overall upstream request cap in ms. |
-| `firstEventTimeoutMs` | `90000` | Stall watchdog: max wait for first event. |
-| `idleTimeoutMs` | `60000` | Stall watchdog: max silence between events. |
+| `providerId` | `dsh-magpie-connect` | 注册到 DSH 的 provider 名称。 |
+| `displayName` | `magpie` | 模型选择器里的分组名。 |
+| `baseUrl` | `''`（未配置） | 带版本号的 API 地址，例如 `http://api.lan/v1`。必填。 |
+| `apiKey` | `''`（未配置） | 网关凭据。必填，即使网关不校验。 |
+| `dataDir` | `~/.dsh-magpie-connect` | 状态目录（状态快照、设置文件、模型缓存）。 |
+| `refreshSeconds` | `300` | 模型目录刷新间隔（秒）。 |
+| `maxRetries` | `2` | 遇到 429/5xx 时的连接重试次数。 |
+| `timeoutMs` | `300000` | 单次请求的总超时（毫秒）。 |
+| `firstEventTimeoutMs` | `90000` | 等待首个上游事件的超时（毫秒）。 |
+| `idleTimeoutMs` | `60000` | 上游事件之间的静默超时（毫秒）。 |
 
-## How it works
+优先级：设置页 > `cordis.patch.yml` > 默认值。设置页只覆盖你保存过的字段。
+
+### 工作原理
 
 ```
-DSH session
-   │  harness chunks (block-start / text-delta / usage / finish …)
+DSH 会话
+   │  harness 数据块（block-start / text-delta / usage / finish …）
    ▼
-MagpieAdapter (registered LlmAdapter)
-   │  pi-ai openai-completions stream (default) /
-   │      openai-responses stream (responses-only lane)
+MagpieAdapter（注册为 DSH 的 LlmAdapter）
+   │  pi-ai openai-completions 流（默认）/
+   │      openai-responses 流（仅支持 responses 的模型）
    ▼
-http://api.lan/v1  ← chat/completions or responses per native_endpoints
+http://api.lan/v1  ← 按 native_endpoints 选择 chat/completions 或 responses
 ```
 
-- **Catalog** — `GET {baseUrl}/models` 全量接入，无付费过滤；磁盘缓存 + 编译期静态
-  快照兜底，网关宕机时 picker 仍可用。任何暴露集合的变化（隐藏/显示、换网关
-  地址、刷新后模型增删）都会 `emit('llm/adapters-updated')`，让浏览器那份
-  catalog 缓存立即重读——否则 picker 会一直显示旧列表到下次重启。
-- **思考档** — `reasoning=true` 且有 ladder 的模型出 picker；无 ladder 但可思考
-  的模型保持 wire 可思考（显式档位直通）；`none` 显式关闭思考，`ultra` 直通
-  网关，不在 pi-ai 内截断。
-- **图片** — 有图的请求经 `ctx.get('attachments')` 取 request 版本字节；
-  文本模型误收图时直接失败（harness 按 inputModalities 已做门控）。
-- **韧性** — 启动即注册，目录后台预热（失败按短间隔重试）；stall 看门狗让静默
-  挂起快速失败为 `TIMEOUT`；`length` 截断如实上抛，不做自动续写。
+- **模型目录** — 全量接入网关 `GET {baseUrl}/models`，不做付费过滤；磁盘缓存加编译期
+  静态快照兜底，网关宕机时选择器仍可用。暴露集合一旦变化（隐藏/显示、换网关地址、
+  刷新后模型增删），会发出 `llm/adapters-updated` 让浏览器重读缓存——否则选择器会
+  一直显示旧列表直到下次重启。
+- **思考档位** — 有档位阶梯的模型进入选择器；没有阶梯但可思考的模型保持可思考
+  （显式档位直通网关）；`none` 关闭思考，`ultra` 直通网关，不在本地截断。
+- **图片** — 带图的请求经 harness 附件服务取字节后上行；文本模型收到图片会直接
+  失败（harness 已按模型声明的输入类型做过门控）。
+- **容错** — 启动即注册，目录在后台预热；静默挂起会被看门狗快速判为超时；
+  上游截断如实上报，不做自动续写。
 
-Health snapshot: `~/.dsh-magpie-connect/adapter-status.json`.
+运行状态快照写在 `~/.dsh-magpie-connect/adapter-status.json`，设置与缓存在同一目录。
 
-## Development
+## 开发
 
 ```sh
 pnpm install
-pnpm run check
+pnpm run check          # 类型检查 + 测试 + 构建
+pnpm run deploy:local   # 构建并同步到 web profile
 ```
 
-The check ladder is typecheck + tests + build; `lib/` is committed, so profile
-installs run without a build.
+`lib/` 是提交进仓库的构建产物，所以 profile 安装时不需要现场构建。
 
-## License
+发布由 `.github/workflows/release.yml` 负责：把 `package.json` 和
+`dsh.plugin.json` 的版本号改成一致后提交推送，流水线会打 tag、建 GitHub Release
+并发布到 npm。版本号带 `-`（如 `0.3.0-rc.1`）时自动标记为预发布。
+
+## 许可证
 
 [MIT](./LICENSE)
