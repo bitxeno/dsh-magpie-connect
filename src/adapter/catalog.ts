@@ -212,6 +212,13 @@ export interface CatalogOptions {
   now?: () => number
   /** Observability hook: fired after every refresh round. */
   onRefresh?: (status: CatalogSnapshot, lastError: string) => void
+  /**
+   * Fired when the exposed model set actually changes. DSH's picker caches
+   * one `modelCatalog()` read per Host generation and only re-reads it on
+   * `llm/adapters-updated`, so a pure in-memory change (hidden models, a
+   * refresh that added or dropped models) is invisible without this.
+   */
+  onInvalidate?: () => void
   /** Delay between startup retries while the live catalog is empty (default 15s). */
   startupRetryMs?: number
 }
@@ -232,7 +239,14 @@ export class ModelCatalog {
   #timer: NodeJS.Timeout | null = null
   #stopped = false
   #onRefresh?: (status: CatalogSnapshot, lastError: string) => void
+  #onInvalidate?: () => void
   #startupRetryMs: number
+  /**
+   * Last announced exposed set. The picker caches its catalog read, so an
+   * invalidation is only worth a Host event when the exposed ids really
+   * moved — otherwise the refresh loop would emit every 5 minutes.
+   */
+  #announced = ''
 
   constructor(options: CatalogOptions = {}) {
     this.#refreshSeconds = options.refreshSeconds ?? 300
@@ -241,6 +255,7 @@ export class ModelCatalog {
     this.#fetch = options.fetchImpl ?? fetch
     this.#now = options.now ?? Date.now
     this.#onRefresh = options.onRefresh
+    this.#onInvalidate = options.onInvalidate
     this.#startupRetryMs = options.startupRetryMs ?? 15_000
   }
 
@@ -282,6 +297,47 @@ export class ModelCatalog {
         // observers must never break the refresh loop
       }
     }
+    // A refresh can add or drop models: tell the picker to re-read.
+    this.#announce()
+  }
+
+  /**
+   * Announce the exposed set when it changed.
+   *
+   * DSH's browser-side model directory caches one `modelCatalog()` read per
+   * Host generation and only re-reads it on `llm/adapters-updated`, so
+   * in-memory catalog mutations (hidden models, a refresh that moved the
+   * list) are otherwise invisible until restart. Firing the event on every
+   * refresh would also work but wakes the whole picker every 5 minutes, so
+   * the exposed ids are fingerprinted and only a real change is announced.
+   */
+  #announce(): void {
+    const fingerprint = this.#fingerprint()
+    if (fingerprint === this.#announced) return
+    this.#announced = fingerprint
+    if (!this.#onInvalidate) return
+    try {
+      this.#onInvalidate()
+    } catch {
+      // observers must never break the refresh loop
+    }
+  }
+
+  /** Stable fingerprint of the exposed set (ids + their capabilities). */
+  #fingerprint(): string {
+    const rows = this.list().map((id) => {
+      const entry = this.#entryFor(id)
+      return [
+        id,
+        entry?.displayName ?? '',
+        entry?.image === true ? 'img' : '-',
+        entry?.reasoning === true ? 'think' : '-',
+        (entry?.efforts ?? []).join(','),
+        String(entry?.contextWindow ?? 0),
+        String(entry?.maxTokens ?? 0),
+      ].join('|')
+    })
+    return rows.join('\n')
   }
 
   /** Whether a gateway origin is configured (empty baseUrl = not configured). */
@@ -318,9 +374,16 @@ export class ModelCatalog {
     return this.#entries.get(model)
   }
 
-  /** Replace the settings-page hidden set (models excluded from the picker). */
+  /**
+   * Replace the settings-page hidden set (models excluded from the picker).
+   * Announces: hiding/showing models changes the exposed list, and DSH's
+   * picker only re-reads it on `llm/adapters-updated`.
+   */
   setHidden(ids: readonly string[]): void {
-    this.#hidden = new Set(ids)
+    const next = new Set(ids)
+    if (next.size === this.#hidden.size && [...next].every((id) => this.#hidden.has(id))) return
+    this.#hidden = next
+    this.#announce()
   }
 
   /** Currently hidden model ids. */
@@ -342,6 +405,8 @@ export class ModelCatalog {
     this.#entries = new Map()
     this.#updatedAt = 0
     this.#lastError = origin === '' ? 'magpie gateway baseUrl is not configured — set it on the Magpie settings page' : ''
+    // The picker must not keep serving the previous origin's directory.
+    this.#announce()
   }
 
   get baseUrl(): string {
@@ -438,22 +503,35 @@ export class ModelCatalog {
   }
 }
 
-async function withTimeout(promise: Promise<Response>, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+async function withTimeout(
+  run: (signal: AbortSignal) => Promise<Response>,
+  timeoutMs = FETCH_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await promise
+    return await run(controller.signal)
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`models endpoint timed out after ${timeoutMs}ms`)
+    throw error
   } finally {
     clearTimeout(timer)
   }
 }
 
 /** Fetch the live gateway model list. */
-export async function fetchMagpieModels(baseUrl: string, fetchImpl: typeof fetch): Promise<Map<string, MagpieModelEntry>> {
+export async function fetchMagpieModels(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<Map<string, MagpieModelEntry>> {
   const response = await withTimeout(
-    fetchImpl(`${baseUrl.replace(/\/+$/, '')}/v1/models`, {
-      headers: { accept: 'application/json' },
-    }),
+    (signal) =>
+      fetchImpl(`${baseUrl.replace(/\/+$/, '')}/v1/models`, {
+        headers: { accept: 'application/json', ...(options.headers ?? {}) },
+        signal,
+      }),
+    options.timeoutMs ?? FETCH_TIMEOUT_MS,
   )
   if (!response.ok) throw new Error(`models endpoint returned HTTP ${response.status}`)
   const payload = (await response.json()) as unknown

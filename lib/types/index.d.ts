@@ -1,4 +1,6 @@
+import { ModelCatalog } from './adapter/catalog.ts';
 import { type DshMagpieConnectConfig } from './config.ts';
+import { SettingsStore } from './settings.ts';
 /**
  * dsh-magpie-connect DSH cordis plugin entry.
  *
@@ -27,6 +29,12 @@ export interface PluginContext {
     inject?(deps: string[], fn: (ctx: Record<string, unknown>) => unknown): unknown;
     effect?(fn: () => () => void): unknown;
     on?(event: string, listener: (...args: never[]) => unknown): () => void;
+    /**
+     * Cordis `ctx.emit` (mixed in from the events service). Used to publish
+     * `llm/adapters-updated` when this plugin's own catalog moves, without
+     * touching the adapter registry.
+     */
+    emit?(event: string, ...args: unknown[]): unknown;
 }
 export declare const name = "dsh-magpie-connect";
 export declare const inject: readonly ["llm"];
@@ -34,6 +42,22 @@ export declare const inject: readonly ["llm"];
 export declare const SETTINGS_API = "/api/magpie-settings";
 export declare const MODELS_API = "/api/magpie-models";
 export declare const TEST_API = "/api/magpie-test";
+/** Backend generation behind the shared settings routes (newest wins). */
+export interface SettingsBackend {
+    store: SettingsStore;
+    catalog: ModelCatalog;
+    patchEndpoint: {
+        baseUrl: string;
+        apiKey: string;
+    };
+    effective: () => {
+        baseUrl: string;
+        apiKey: string;
+    };
+    applyPageSettings: () => void;
+}
+/** @internal Test hook: forget installed routes so the next apply reinstalls. */
+export declare function __resetSettingsRoutes(): void;
 export declare function apply(ctx: PluginContext, config?: DshMagpieConnectConfig): {
     ready: Promise<{
         version: string;

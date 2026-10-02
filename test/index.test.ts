@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, MODELS_API, SETTINGS_API, TEST_API, type PluginContext } from '../src/index.ts'
+import { apply, MODELS_API, SETTINGS_API, TEST_API, __resetSettingsRoutes, type PluginContext } from '../src/index.ts'
 
 const gatewayBody = {
   data: [
@@ -37,13 +37,18 @@ interface Route {
   fetch: (request: Request) => Promise<Response>
 }
 
-function stubContext(): PluginContext & { routes: Route[]; adapters: Array<{ providers: string[] }> } {
+function stubContext(): PluginContext & { routes: Route[]; adapters: Array<{ providers: string[] }>; emitted: string[] } {
   const routes: Route[] = []
   const adapters: Array<{ providers: string[] }> = []
-  const ctx: PluginContext & { routes: Route[]; adapters: Array<{ providers: string[] }> } = {
+  const emitted: string[] = []
+  const ctx: PluginContext & { routes: Route[]; adapters: Array<{ providers: string[] }>; emitted: string[] } = {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     routes,
     adapters,
+    emitted,
+    emit: (event: string) => {
+      emitted.push(event)
+    },
     llm: {
       registerAdapter: (providers: string[], _adapter: unknown) => {
         adapters.push({ providers })
@@ -57,6 +62,11 @@ function stubContext(): PluginContext & { routes: Route[]; adapters: Array<{ pro
           connection: {
             fetch: {
               register: (route: Route) => {
+                // Mirror the real connection registry: routes are keyed by
+                // PATH and a second registration of the same path throws.
+                if (routes.some((entry) => entry.path === route.path)) {
+                  throw new Error(`connection: exact Fetch route ${JSON.stringify(route.path)} is already registered`)
+                }
                 routes.push(route)
                 return () => {}
               },
@@ -105,6 +115,7 @@ test('apply registers the adapter and serves settings/models/test routes', async
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   const dir = mkdtempSync(join(tmpdir(), 'magpie-apply-'))
+  __resetSettingsRoutes()
   const ctx = stubContext()
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: dir })
   assert.deepEqual(ctx.adapters, [{ providers: ['dsh-magpie-connect'] }])
@@ -133,6 +144,7 @@ test('POST settings persists, hides models from the picker, and validates', asyn
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   const dir = mkdtempSync(join(tmpdir(), 'magpie-apply-'))
+  __resetSettingsRoutes()
   const ctx = stubContext()
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: dir })
   await settled()
@@ -154,6 +166,7 @@ test('test endpoint reports gateway failures instead of throwing', async (t) => 
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   const dir = mkdtempSync(join(tmpdir(), 'magpie-apply-'))
+  __resetSettingsRoutes()
   const ctx = stubContext()
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: dir })
   await settled()
@@ -168,6 +181,7 @@ test('missing apiKey gates the picker, saves, and the test probe', async (t) => 
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   const dir = mkdtempSync(join(tmpdir(), 'magpie-apply-'))
+  __resetSettingsRoutes()
   const ctx = stubContext()
   // URL set but no key anywhere: treated as unconfigured.
   apply(ctx, { baseUrl: origin, refreshSeconds: 3600, dataDir: dir })
@@ -193,4 +207,88 @@ test('missing apiKey gates the picker, saves, and the test probe', async (t) => 
     (after.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id),
     ['a', 'b'],
   )
+})
+
+test('hiding models emits llm/adapters-updated so the picker re-reads', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+  const afterStart = ctx.emitted.filter((event) => event === 'llm/adapters-updated').length
+  assert.equal(afterStart, 1, 'the first catalog fill announces')
+
+  // The picker caches one catalog read per Host generation and re-reads only
+  // on this event, so a save that hides a model must publish it.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 1)
+
+  // Re-saving the same set changes nothing exposed: no extra event.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 1)
+
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: [] })
+  assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 2)
+})
+
+test('switching the gateway origin empties the stale directory and announces it', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  const other = await withServer(gatewayBody)
+  t.after(() => {
+    server.close()
+    other.server.close()
+  })
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+  const afterStart = ctx.emitted.filter((event) => event === 'llm/adapters-updated').length
+
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: other.origin, apiKey: 'test-key' })
+  assert.equal((saved.payload as { ok: boolean }).ok, true)
+  // The old origin's models must not stay in the picker while the new
+  // directory is still warming up.
+  assert.equal(
+    ctx.emitted.filter((event) => event === 'llm/adapters-updated').length > afterStart,
+    true,
+    'an origin change announces',
+  )
+})
+
+test('overlapping generations share routes and serve the newest backend', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const first = stubContext()
+  apply(first, { baseUrl: origin, apiKey: 'key-one', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  // Second generation overlaps the first (hot reload): no throw, routes shared.
+  const second = stubContext()
+  apply(second, { baseUrl: origin, apiKey: 'key-two', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  // The second generation registered nothing into its own stub, but the shared
+  // routes answer with the newest backend.
+  assert.equal(second.routes.length, 0)
+  const settings = await callRoute(first.routes, SETTINGS_API, 'GET')
+  assert.equal((settings.payload as { value: { apiKey: string } }).value.apiKey, 'key-two')
+})
+
+test('every endpoint registers exactly one route per path (POST is never lost)', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  // The connection registry keys routes by path, so a second entry for the
+  // same path is dropped — which silently killed POST /api/magpie-settings
+  // (the save button) while GET kept working.
+  const paths = ctx.routes.map((route) => route.path)
+  assert.deepEqual([...new Set(paths)], paths, `each path registers once: ${paths.join(', ')}`)
+
+  const settings = ctx.routes.find((route) => route.path === SETTINGS_API)
+  assert.ok(settings, 'settings route registered')
+  assert.deepEqual([...settings.methods].sort(), ['GET', 'POST'])
 })

@@ -91,6 +91,13 @@ export interface CatalogOptions {
     now?: () => number;
     /** Observability hook: fired after every refresh round. */
     onRefresh?: (status: CatalogSnapshot, lastError: string) => void;
+    /**
+     * Fired when the exposed model set actually changes. DSH's picker caches
+     * one `modelCatalog()` read per Host generation and only re-reads it on
+     * `llm/adapters-updated`, so a pure in-memory change (hidden models, a
+     * refresh that added or dropped models) is invisible without this.
+     */
+    onInvalidate?: () => void;
     /** Delay between startup retries while the live catalog is empty (default 15s). */
     startupRetryMs?: number;
 }
@@ -110,7 +117,11 @@ export declare class ModelCatalog {
     get configured(): boolean;
     refreshModels(): Promise<void>;
     getEntry(model: string): MagpieModelEntry | undefined;
-    /** Replace the settings-page hidden set (models excluded from the picker). */
+    /**
+     * Replace the settings-page hidden set (models excluded from the picker).
+     * Announces: hiding/showing models changes the exposed list, and DSH's
+     * picker only re-reads it on `llm/adapters-updated`.
+     */
     setHidden(ids: readonly string[]): void;
     /** Currently hidden model ids. */
     hidden(): string[];
@@ -149,6 +160,9 @@ export declare class ModelCatalog {
     get lastError(): string;
 }
 /** Fetch the live gateway model list. */
-export declare function fetchMagpieModels(baseUrl: string, fetchImpl: typeof fetch): Promise<Map<string, MagpieModelEntry>>;
+export declare function fetchMagpieModels(baseUrl: string, fetchImpl: typeof fetch, options?: {
+    timeoutMs?: number;
+    headers?: Record<string, string>;
+}): Promise<Map<string, MagpieModelEntry>>;
 /** Default cache location next to the plugin data dir (index.ts convention). */
 export declare function defaultCachePath(dataDir: string): string;

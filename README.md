@@ -37,6 +37,11 @@ models appear in the model picker. Everything saves to
 Precedence per field: settings page > `cordis.patch.yml` config > defaults.
 Hidden models only come from the page; an empty list shows everything.
 
+Toggling visibility, changing the origin, or a refresh that added/dropped
+models publishes `llm/adapters-updated`, the one event DSH's picker listens
+to — the browser caches one catalog read per Host generation, so without it
+the picker keeps the stale list until `dsh web` restarts.
+
 ## Configuration
 
 Set the gateway URL first — either on the Settings → Magpie page (recommended,
@@ -84,7 +89,9 @@ http://api.lan/v1  ← chat/completions or responses per native_endpoints
 ```
 
 - **Catalog** — `GET /v1/models` 全量接入，无付费过滤；磁盘缓存 + 编译期静态
-  快照兜底，网关宕机时 picker 仍可用。
+  快照兜底，网关宕机时 picker 仍可用。任何暴露集合的变化（隐藏/显示、换网关
+  地址、刷新后模型增删）都会 `emit('llm/adapters-updated')`，让浏览器那份
+  catalog 缓存立即重读——否则 picker 会一直显示旧列表到下次重启。
 - **思考档** — `reasoning=true` 且有 ladder 的模型出 picker；无 ladder 但可思考
   的模型保持 wire 可思考（显式档位直通）；`none` 显式关闭思考，`ultra` 直通
   网关，不在 pi-ai 内截断。

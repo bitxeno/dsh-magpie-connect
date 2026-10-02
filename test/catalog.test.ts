@@ -226,6 +226,64 @@ test('unconfigured catalog exposes nothing and never fetches', async () => {
   }
 })
 
+test('catalog announces only when the exposed set actually changed', async () => {
+  const announced: string[] = []
+  const catalog = new ModelCatalog({
+    fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }),
+    baseUrl: 'http://api.lan',
+    refreshSeconds: 3600,
+    onInvalidate: () => {
+      announced.push('invalidate')
+    },
+  })
+  try {
+    await catalog.refreshOnce()
+    assert.equal(announced.length, 1, 'first fill announces')
+    // Same gateway answer: the exposed set is unchanged, so the refresh loop
+    // must not wake the picker every interval.
+    await catalog.refreshOnce()
+    assert.equal(announced.length, 1, 'identical refresh does not announce')
+
+    catalog.setHidden(['codex/gpt-5.6-terra'])
+    assert.equal(announced.length, 2, 'hiding a model announces')
+    // Re-applying the same hidden set is a no-op.
+    catalog.setHidden(['codex/gpt-5.6-terra'])
+    assert.equal(announced.length, 2, 'unchanged hidden set does not announce')
+    catalog.setHidden([])
+    assert.equal(announced.length, 3, 'showing a model again announces')
+
+    catalog.setBaseUrl('')
+    assert.equal(announced.length, 4, 'clearing the origin announces')
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('catalog announces when the gateway list itself moves', async () => {
+  const announced: number[] = []
+  const single = { data: [gatewayBody.data[0]] }
+  let body: unknown = single
+  const live = (async (url: string | URL) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  const catalog = new ModelCatalog({
+    fetchImpl: live,
+    baseUrl: 'http://api.lan',
+    refreshSeconds: 3600,
+    onInvalidate: () => {
+      announced.push(1)
+    },
+  })
+  try {
+    await catalog.refreshOnce()
+    assert.equal(announced.length, 1, 'the first fill announces')
+    body = gatewayBody
+    await catalog.refreshOnce()
+    assert.equal(announced.length, 2, 'a refresh that adds models announces')
+  } finally {
+    catalog.stop()
+  }
+})
+
 test('clearing the baseUrl empties a previously live catalog', async () => {
   const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }), baseUrl: 'http://api.lan' })
   try {

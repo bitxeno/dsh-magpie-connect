@@ -35,6 +35,7 @@ export const EN: Dict = {
   pluginVersion: 'Plugin version:',
   loadFailed: 'Failed to load settings: {message}',
   requestFailed: 'Request failed (HTTP {status})',
+  requestTimeout: 'Request timed out. Check the gateway address and try again.',
 }
 
 export const ZH: Dict = {
@@ -68,6 +69,7 @@ export const ZH: Dict = {
   pluginVersion: '插件版本：',
   loadFailed: '加载设置失败：{message}',
   requestFailed: '请求失败（HTTP {status}）',
+  requestTimeout: '请求超时，请检查网关地址后重试。',
 }
 
 export interface LocaleRuntime {

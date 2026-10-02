@@ -46,13 +46,32 @@ interface Envelope {
   error?: string
 }
 
+/**
+ * Client cap for one settings request. Without it a gateway probe that never
+ * answers leaves the card stuck in "Saving…"/"Testing…" with every control
+ * disabled — the state the page showed while the POST route was missing.
+ */
+const REQUEST_TIMEOUT_MS = 30_000
+
 async function request(path: string, method = 'GET', body?: unknown): Promise<unknown> {
-  const response = await fetch(path, {
-    method,
-    headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
-    cache: 'no-store',
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method,
+      headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      cache: 'no-store',
+      signal: controller.signal,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+  } catch (cause) {
+    // A 404 body from an unregistered route is a real answer, so this branch
+    // is network-level or an abort — report it rather than hanging.
+    throw new Error(cause instanceof Error && cause.name === 'AbortError' ? text('requestTimeout') : String(cause))
+  } finally {
+    clearTimeout(timer)
+  }
   let payload: Envelope
   try {
     payload = (await response.json()) as Envelope
