@@ -1,4 +1,5 @@
 import { NS, EN, ZH, setLocaleRuntime, text, type LocaleRuntime } from './i18n.ts'
+import { installSettingsNavIcon } from './nav-icon.ts'
 import { MagpieSettings } from './page.tsx'
 
 interface Slots {
@@ -61,6 +62,10 @@ export function apply(ctx: ClientContext): void {
       MagpieSettings,
     ),
   )
+  // `settings.section` projects only id/order/label and the shell's nav glyph is
+  // a hardcoded map by id, so this plugin's row would draw the fallback gear.
+  // Claim it and swap in the mark; see nav-icon.ts for why and when to delete.
+  installSettingsNavIcon(ctx, () => text('nav'))
 }
 
 export const inject = ['slots', 'locale']
