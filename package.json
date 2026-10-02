@@ -1,0 +1,65 @@
+{
+  "name": "dsh-magpie-connect",
+  "description": "Magpie LAN gateway models for DeepSeek Harness (DSH): native dsh-llm adapter plugin with image + responses + thinking levels.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.ts\"",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "magpie",
+    "lan-gateway",
+    "cordis",
+    "cordis-plugin",
+    "llm-adapter",
+    "llm-provider",
+    "llm",
+    "ai-models",
+    "typescript",
+    "nodejs"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.82.1"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "@google/genai",
+      "protobufjs"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
+  }
+}

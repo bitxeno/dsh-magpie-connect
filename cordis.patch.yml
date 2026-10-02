@@ -1,0 +1,14 @@
+# dsh-magpie-connect DSH plugin — bundle patch: insert the plugin row (deployment-global).
+#
+# Defaults point at the LAN gateway with no key. Override any option via the
+# config object below (see src/config.ts).
+#
+# - baseUrl: gateway origin (models + chat/completions + responses live under it).
+# - apiKey:  gateway credential; the LAN gateway needs none ('not-needed' is sent).
+# - displayName: cosmetic label in the model picker (route id stays providerId).
+# - providerId:  RENAME the route id itself (existing sessions pointing at the
+#   old id will orphan — prefer displayName for a cosmetic rename).
+- insert:
+    - id: dsh-magpie-connect
+      name: 'dsh-magpie-connect'
+      config: {}
