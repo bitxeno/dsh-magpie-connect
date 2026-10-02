@@ -351,18 +351,30 @@ test('image input resolves bytes and streams', async () => {
 
 test('live runtime endpoint overrides the static baseUrl/apiKey per request', async () => {
   const seen: SeenCall[] = []
-  const origin = 'http://page.lan'
   const adapter = testAdapter(textCatalog, {
     providerOverride: cannedProvider([textLeg('hi', 'stop')], seen),
-    magpieBaseUrl: 'http://static.lan',
+    magpieBaseUrl: 'http://static.lan/v1',
     apiKey: 'static-key',
     runtime: {
-      baseUrl: () => origin,
+      baseUrl: () => 'http://page.lan/v1',
       apiKey: () => 'page-key',
     },
   })
   await collectChunks(adapter, streamOptions())
   assert.equal((seen[0]?.wireModel.baseUrl as string), 'http://page.lan/v1')
+})
+
+test('the configured API root reaches pi-ai verbatim, version included', async () => {
+  const seen: SeenCall[] = []
+  // A gateway on /v3 must be asked for /v3, not /v3/v1: the version is part of
+  // the configured URL and the adapter never synthesizes one.
+  const adapter = testAdapter(textCatalog, {
+    providerOverride: cannedProvider([textLeg('hi', 'stop')], seen),
+    magpieBaseUrl: 'http://static.lan/v3',
+    apiKey: 'static-key',
+  })
+  await collectChunks(adapter, streamOptions())
+  assert.equal(seen[0]?.wireModel.baseUrl, 'http://static.lan/v3')
 })
 
 test('runtime apiKey reaches the provider options', async () => {
@@ -393,7 +405,8 @@ test('without runtime the static options apply', async () => {
   const seen: SeenCall[] = []
   const adapter = testAdapter(textCatalog, {
     providerOverride: cannedProvider([textLeg('hi', 'stop')], seen),
-    magpieBaseUrl: 'http://static.lan/',
+    // A trailing slash is stripped either way; the version is untouched.
+    magpieBaseUrl: 'http://static.lan/v1/',
     apiKey: 'static-key',
   })
   await collectChunks(adapter, streamOptions())

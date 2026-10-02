@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, MODELS_API, SETTINGS_API, TEST_API, __resetSettingsRoutes, type PluginContext } from '../src/index.ts'
+import { apply, DISCOVER_API, MODELS_API, SETTINGS_API, TEST_API, __resetSettingsRoutes, type PluginContext } from '../src/index.ts'
 
 const gatewayBody = {
   data: [
@@ -254,6 +254,98 @@ test('switching the gateway origin empties the stale directory and announces it'
     true,
     'an origin change announces',
   )
+})
+
+test('discover returns full candidate rows for the fetch dialog', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  assert.equal((found.payload as { ok: boolean }).ok, true)
+  const value = (found.payload as { value: { count: number; models: Array<Record<string, unknown>> } }).value
+  assert.equal(value.count, 2)
+  assert.deepEqual(
+    value.models.map((row) => row.id),
+    ['a', 'b'],
+  )
+  // The dialog renders the same chips the list does, so discovery must carry
+  // the capabilities — not just ids.
+  const a = value.models.find((row) => row.id === 'a')
+  assert.equal(a?.image, true)
+  assert.equal(a?.contextWindow, 100000)
+  const b = value.models.find((row) => row.id === 'b')
+  assert.equal(b?.responsesOnly, true)
+  assert.equal(b?.reasoning, true)
+  assert.deepEqual(b?.efforts, ['low', 'medium'])
+})
+
+test('discover asks the endpoint the form shows, not the saved one', async (t) => {
+  const saved = await withServer(gatewayBody)
+  const typed = await withServer({ data: [{ id: 'typed-only' }] })
+  t.after(() => {
+    saved.server.close()
+    typed.server.close()
+  })
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: saved.origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  // Filling in a gateway must be one pass: the unsaved URL answers, so the
+  // dialog can list candidates before the user commits anything.
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: typed.origin, apiKey: 'typed-key' })
+  const value = (found.payload as { value: { models: Array<{ id: string }> } }).value
+  assert.deepEqual(value.models.map((row) => row.id), ['typed-only'])
+})
+
+test('discover reports gateway failures and a missing key instead of throwing', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const refused = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: 'http://127.0.0.1:1' })
+  assert.equal((refused.payload as { ok: boolean }).ok, false)
+  const invalid = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: 'not a url' })
+  assert.equal((invalid.payload as { ok: boolean }).ok, false)
+  const noKey = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: '   ' })
+  assert.equal((noKey.payload as { ok: boolean }).ok, false)
+  assert.match((noKey.payload as { error: string }).error, /apiKey is required/)
+})
+
+test('saving prunes hidden ids the gateway no longer serves', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  // 'a' is served, 'ghost' is not: the page can only ever show live rows, so a
+  // stale id could never be seen or cleared again — it must not be stored.
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['a', 'ghost'] })
+  assert.deepEqual((saved.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['a'])
+
+  const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')
+  assert.deepEqual((settings.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['a'])
+})
+
+test('pruning keeps the submitted set when the directory is still empty', async (t) => {
+  // An unreachable gateway must not silently wipe the user's hidden set: with
+  // nothing to prune against, the submitted ids are stored as-is.
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: 'http://127.0.0.1:1', apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['kept', 'also-kept'] })
+  assert.deepEqual((saved.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['kept', 'also-kept'])
 })
 
 test('overlapping generations share routes and serve the newest backend', async (t) => {

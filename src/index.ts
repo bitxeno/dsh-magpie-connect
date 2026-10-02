@@ -6,6 +6,7 @@ import {
   defaultCachePath,
   fetchMagpieModels,
   type CatalogSnapshot,
+  type MagpieModelEntry,
 } from './adapter/catalog.ts'
 import { MagpieAdapter } from './adapter/magpie-adapter.ts'
 import type { AttachmentStore } from './adapter/messages.ts'
@@ -59,6 +60,12 @@ export const inject = ['llm'] as const
 export const SETTINGS_API = '/api/magpie-settings'
 export const MODELS_API = '/api/magpie-models'
 export const TEST_API = '/api/magpie-test'
+/**
+ * Candidate discovery: asks the endpoint the form currently shows (including a
+ * key typed but not yet saved) what it serves. The reply is candidates the
+ * user picks from — never configuration written behind them.
+ */
+export const DISCOVER_API = '/api/magpie-discover'
 
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
@@ -86,6 +93,30 @@ interface ModelRow {
   reasoning: boolean
   efforts: string[]
   hidden: boolean
+}
+
+/** One discovered candidate: a {@link ModelRow} without this plugin's own visibility flag. */
+export type CandidateRow = Omit<ModelRow, 'hidden'>
+
+/** True when the endpoints advertise responses but not chat completions. */
+function responsesOnlyFor(nativeEndpoints: readonly string[]): boolean {
+  if (nativeEndpoints.length === 0) return false
+  const hasCompletions = nativeEndpoints.some((endpoint) => endpoint.includes('/chat/completions'))
+  return !hasCompletions && nativeEndpoints.some((endpoint) => endpoint.includes('/responses'))
+}
+
+/** Project one catalog entry (or a bare id) into the wire row the page renders. */
+function toRow(id: string, entry: MagpieModelEntry | undefined): CandidateRow {
+  return {
+    id,
+    displayName: entry?.displayName ?? id,
+    ...(entry?.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+    ...(entry?.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
+    image: entry?.image ?? false,
+    responsesOnly: responsesOnlyFor(entry?.nativeEndpoints ?? []),
+    reasoning: entry?.reasoning ?? false,
+    efforts: entry?.efforts ?? [],
+  }
 }
 
 let currentBackend: SettingsBackend | null = null
@@ -121,26 +152,10 @@ async function readRouteBody(request: Request): Promise<unknown> {
 function buildModelRows(backend: SettingsBackend): ModelRow[] {
   const { store, catalog } = backend
   const hidden = new Set(store.get().hiddenModels ?? [])
+  // Hidden ids survive in the list even when the gateway no longer serves
+  // them: a stale entry must stay reachable so it can be un-hidden again.
   const ids = new Set<string>([...catalog.list(), ...hidden])
-  return [...ids].sort().map((id) => {
-    const entry = catalog.getEntry(id)
-    const endpoints = entry?.nativeEndpoints ?? []
-    const responsesOnly =
-      endpoints.length > 0
-        ? !endpoints.some((endpoint) => endpoint.includes('/chat/completions')) && endpoints.some((endpoint) => endpoint.includes('/responses'))
-        : false
-    return {
-      id,
-      displayName: entry?.displayName ?? id,
-      ...(entry?.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
-      ...(entry?.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
-      image: entry?.image ?? false,
-      responsesOnly,
-      reasoning: entry?.reasoning ?? false,
-      efforts: entry?.efforts ?? [],
-      hidden: hidden.has(id),
-    }
-  })
+  return [...ids].sort().map((id) => ({ ...toRow(id, catalog.getEntry(id)), hidden: hidden.has(id) }))
 }
 
 function backendOrThrow(): SettingsBackend {
@@ -183,7 +198,13 @@ async function handleSettingsPost(request: Request): Promise<Response> {
   try {
     const backend = backendOrThrow()
     const body = await readRouteBody(request)
-    const saved = await backend.store.save(normalizePageSettings(body))
+    const normalized = normalizePageSettings(body)
+    // Prune ids the gateway no longer serves: the page only ever shows live
+    // rows, so a stale hidden id could otherwise never be seen or cleared.
+    if (normalized.hiddenModels !== undefined) {
+      normalized.hiddenModels = backend.catalog.pruneHidden(normalized.hiddenModels)
+    }
+    const saved = await backend.store.save(normalized)
     backend.applyPageSettings()
     const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, saved)
     return routeOk({ baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, hiddenModels: saved.hiddenModels ?? [] })
@@ -201,27 +222,65 @@ async function handleModelsGet(): Promise<Response> {
   }
 }
 
+/** Resolve the endpoint one probe should ask: form values first, effective config as fallback. */
+function probeTarget(
+  backend: SettingsBackend,
+  body: { baseUrl?: unknown; apiKey?: unknown },
+): { origin: string; key: string } {
+  const effective = backend.effective()
+  const origin = normalizeBaseUrl(body.baseUrl ?? effective.baseUrl)
+  const rawKey = typeof body.apiKey === 'string' ? body.apiKey : effective.apiKey
+  const key = rawKey.trim()
+  if (key === '') throw new Error('dsh-magpie-connect: apiKey is required — fill it in before asking the gateway')
+  return { origin, key }
+}
+
+/**
+ * Turn a gateway failure into copy the page can show. A 404 from the gateway
+ * almost always means the origin path is wrong or the key is unknown or
+ * unauthorized (many gateways hide existence behind 404 instead of 401).
+ */
+function hintGatewayFailure(error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error)
+  const hinted =
+    /HTTP 404/.test(message) && !/网关返回 404/.test(message)
+      ? `${message}（网关返回 404：多为 API 地址路径不对，或该 Key 无效/无权访问）`
+      : message
+  return routeFail(hinted)
+}
+
 async function handleTestPost(request: Request): Promise<Response> {
   try {
     const backend = backendOrThrow()
-    const effective = backend.effective()
     const body = (await readRouteBody(request)) as { baseUrl?: unknown; apiKey?: unknown }
-    const origin = normalizeBaseUrl(body.baseUrl ?? effective.baseUrl)
-    const rawKey = typeof body.apiKey === 'string' ? body.apiKey : effective.apiKey
-    const key = rawKey.trim()
-    if (key === '') throw new Error('dsh-magpie-connect: apiKey is required — fill it in before testing')
+    const { origin, key } = probeTarget(backend, body)
     const models = await fetchMagpieModels(origin, fetch, { headers: { authorization: `Bearer ${key}` } })
     return routeOk({ count: models.size, models: [...models.keys()].sort().slice(0, 50) })
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    // A 404 from the gateway almost always means the origin path is
-    // wrong or the key is unknown/unauthorized (many gateways hide
-    // existence behind 404 instead of 401).
-    const hinted =
-      /HTTP 404/.test(message) && !/网关返回 404/.test(message)
-        ? `${message}（网关返回 404：多为 API 地址路径不对，或该 Key 无效/无权访问）`
-        : message
-    return routeFail(hinted)
+    return hintGatewayFailure(error)
+  }
+}
+
+/**
+ * Candidate discovery for the fetch-available-models dialog.
+ *
+ * Unlike {@link handleTestPost} (a count for the connection check) this returns
+ * full rows so the picker can show the same chips the list does, and it caps
+ * nothing: the dialog filters client-side. The origin and key come from the
+ * form, so a provider can be filled in one pass instead of save-then-return.
+ */
+async function handleDiscoverPost(request: Request): Promise<Response> {
+  try {
+    const backend = backendOrThrow()
+    const body = (await readRouteBody(request)) as { baseUrl?: unknown; apiKey?: unknown }
+    const { origin, key } = probeTarget(backend, body)
+    const models = await fetchMagpieModels(origin, fetch, { headers: { authorization: `Bearer ${key}` } })
+    const candidates = [...models.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, entry]) => toRow(id, entry))
+    return routeOk({ count: candidates.length, models: candidates })
+  } catch (error) {
+    return hintGatewayFailure(error)
   }
 }
 
@@ -244,6 +303,12 @@ function routeDefinitions(): RouteDefinition[] {
       methods: ['POST'],
       requestBody: 'buffered',
       fetch: (request: Request) => handleTestPost(request),
+    },
+    {
+      path: DISCOVER_API,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request: Request) => handleDiscoverPost(request),
     },
   ]
 }
@@ -386,11 +451,12 @@ export function apply(
     const page = store.get()
     const endpoint = resolveEffectiveEndpoint(patchEndpoint, page)
     // The gate: URL and key are both required. Anything missing clears the
-    // catalog origin, which empties the picker and fails calls fast.
-    const catalogOrigin = isConfigured(endpoint) ? endpoint.baseUrl.replace(/\/+$/, '') : ''
-    if (catalog.baseUrl !== catalogOrigin) {
-      catalog.setBaseUrl(catalogOrigin)
-      if (catalogOrigin !== '') {
+    // catalog API root, which empties the picker and calls fail fast.
+    // The value is the versioned root (`…/v1`), passed through untouched.
+    const catalogBaseUrl = isConfigured(endpoint) ? endpoint.baseUrl.replace(/\/+$/, '') : ''
+    if (catalog.baseUrl !== catalogBaseUrl) {
+      catalog.setBaseUrl(catalogBaseUrl)
+      if (catalogBaseUrl !== '') {
         void catalog.refreshOnce().catch((err) => {
           logger.warn(`dsh-magpie-connect: catalog refresh after endpoint change failed: ${err instanceof Error ? err.message : String(err)}`)
         })

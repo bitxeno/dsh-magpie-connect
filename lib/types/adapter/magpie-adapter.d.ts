@@ -3,7 +3,7 @@ import { type HarnessChunk, type PiEvent } from './events.ts';
 import { type AttachmentStore, type HarnessGenerateOptions } from './messages.ts';
 /**
  * Magpie LAN gateway adapter: registers as a DSH LlmAdapter and streams
- * directly from `{baseUrl}/v1` — chat completions for most models plus the
+ * directly from the configured API root (e.g. `…/v1`) — chat completions for most models plus the
  * Responses API for responses-only models (Muse Spark / Codex / Grok lanes).
  *
  * Adapter contract: dsh-llm LlmAdapter (providerInfo/listModels/resolveModel/
@@ -20,7 +20,7 @@ export interface PiProviderLike {
 }
 /** Live endpoint read per request so the settings page applies without restart. */
 export interface RuntimeEndpoint {
-    /** Gateway origin, e.g. `http://api.lan` (no trailing slash). */
+    /** Versioned API root, e.g. `http://api.lan/v1` (no trailing slash). */
     baseUrl(): string;
     /** Bearer key sent to the gateway. */
     apiKey(): string;

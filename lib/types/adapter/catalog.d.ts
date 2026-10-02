@@ -1,13 +1,16 @@
 /**
  * Model directory for the Magpie LAN gateway.
  *
- * Single source: `GET {baseUrl}/v1/models` already curates the servable set
+ * Single source: `GET {baseUrl}/models` already curates the servable set
  * with full per-model metadata (modalities, native endpoints, reasoning
  * ladders, context limits). There is no paid/free filter — everything listed
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
+ *
+ * `baseUrl` is the versioned API root (`http://api.lan/v1`), never an origin:
+ * the gateway may move to `/v2`, and the plugin must not know that version.
  */
-/** Conventional LAN origin (example value, not a default — empty means unconfigured). */
+/** Conventional LAN API root (example value, not a default — empty means unconfigured). */
 export declare const MAGPIE_DEFAULT_BASE_URL = "http://api.lan";
 export interface MagpieModelEntry {
     id: string;
@@ -85,7 +88,7 @@ export interface CatalogOptions {
     refreshSeconds?: number;
     /** Where the gateway snapshot cache lives (plugin data dir). */
     cachePath?: string;
-    /** Gateway origin override for tests. */
+    /** Versioned API root override for tests. */
     baseUrl?: string;
     fetchImpl?: typeof fetch;
     now?: () => number;
@@ -113,7 +116,7 @@ export declare class ModelCatalog {
     start(): Promise<void>;
     stop(): void;
     refreshOnce(): Promise<void>;
-    /** Whether a gateway origin is configured (empty baseUrl = not configured). */
+    /** Whether a gateway API root is configured (empty baseUrl = not configured). */
     get configured(): boolean;
     refreshModels(): Promise<void>;
     getEntry(model: string): MagpieModelEntry | undefined;
@@ -125,8 +128,20 @@ export declare class ModelCatalog {
     setHidden(ids: readonly string[]): void;
     /** Currently hidden model ids. */
     hidden(): string[];
+    /**
+     * Drop hidden ids the gateway no longer serves.
+     *
+     * The hidden set is only meaningful against a live directory: keeping an id
+     * that has since left `GET /models` would make the settings page carry rows
+     * nobody can act on, and a model that later returns would come back
+     * invisibly hidden for no reason the user can see. Called on save, when the
+     * directory is the freshest the session has.
+     * @param ids - the hidden set as submitted.
+     * @returns the subset still worth storing.
+     */
+    pruneHidden(ids: readonly string[]): string[];
     isHidden(model: string): boolean;
-    /** Point the refresh loop at another gateway origin (settings page change). */
+    /** Point the refresh loop at another API root (settings page change). */
     setBaseUrl(baseUrl: string): void;
     get baseUrl(): string;
     decision(model: string): {
@@ -159,7 +174,13 @@ export declare class ModelCatalog {
     snapshot(): CatalogSnapshot;
     get lastError(): string;
 }
-/** Fetch the live gateway model list. */
+/**
+ * Fetch the live gateway model list.
+ *
+ * `baseUrl` is the versioned API root (`http://api.lan/v1`) exactly as the user
+ * configured it; only the resource is appended. Never synthesize a version
+ * here — a gateway on `/v2` would otherwise be asked for `/v2/v1/models`.
+ */
 export declare function fetchMagpieModels(baseUrl: string, fetchImpl: typeof fetch, options?: {
     timeoutMs?: number;
     headers?: Record<string, string>;

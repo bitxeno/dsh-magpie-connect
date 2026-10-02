@@ -17,7 +17,15 @@ export interface EffectiveEndpoint {
 }
 export declare const SETTINGS_FILE = "settings.json";
 export declare function defaultSettingsPath(dataDir: string): string;
-/** Normalize an origin: must be http(s), no trailing slash. Throws on invalid. */
+/**
+ * Normalize an API base URL: must be http(s), no trailing slash, path kept.
+ *
+ * The path is load-bearing, not a mistake to be trimmed: the gateway versions
+ * its API (`/v1`, and later `/v2`, `/v3`), so this value *is* the prefix every
+ * request is built on. The plugin appends only the resource (`/models`,
+ * `/chat/completions`), never a version of its own — an origin-only value
+ * would make a future `/v2` unreachable.
+ */
 export declare function normalizeBaseUrl(raw: unknown): string;
 /** Normalize a hidden-model list: strings only, deduped, order kept. */
 export declare function normalizeHiddenModels(raw: unknown): string[];

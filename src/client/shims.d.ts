@@ -22,6 +22,7 @@ declare module 'react/jsx-runtime' {
 declare module '@deepseek-ai/dsh-client-ui-primitives' {
   export const Button: (props: Record<string, unknown>) => unknown
   export const Input: (props: Record<string, unknown>) => unknown
+  export const Modal: (props: Record<string, unknown>) => unknown
   export const StateDot: (props: Record<string, unknown>) => unknown
 }
 

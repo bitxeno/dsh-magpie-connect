@@ -12,7 +12,12 @@ export interface DshMagpieConnectConfig {
      * otherwise to `'magpie'`.
      */
     displayName?: string;
-    /** Gateway origin, e.g. `http://api.lan`. `/v1` is appended when missing. Empty = not configured. */
+    /**
+     * Versioned API root, e.g. `http://api.lan/v1`. The version is part of the
+     * value, not something this plugin adds: a gateway that later serves `/v2`
+     * or `/v3` is reached by changing this one string. Trailing slashes are
+     * stripped; the path is kept. Empty = not configured.
+     */
     baseUrl?: string;
     /** Gateway credential. Required: empty means not configured (key or URL missing both gate). */
     apiKey?: string;

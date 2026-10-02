@@ -2,15 +2,17 @@
 #
 # The gateway is NOT configured out of the box: set baseUrl on the Settings
 # sidebar page ("Magpie") or via the config object below (see src/config.ts).
-# Until an origin is set the picker stays empty and calls fail fast.
+# Until an API root is set the picker stays empty and calls fail fast.
 #
 # The Settings sidebar page can override baseUrl/apiKey at runtime
 # (saved to <dataDir>/settings.json, applied without restart) and hides models
 # from the picker. Page values win per-field; the patch config below stays as
 # fallback (e.g. headless compositions without the settings page).
 #
-# - baseUrl: gateway origin, e.g. http://127.0.0.1:3425/v1 (required).
-# - apiKey:  gateway credential (required, even if /v1/models needs none).
+# - baseUrl: versioned API root, e.g. http://api.lan/v1 (required). Include the
+#   version segment: the plugin appends only the resource (/models, /responses),
+#   so a gateway on /v2 or /v3 is reached by changing this one string.
+# - apiKey:  gateway credential (required, even if /models needs none).
 # - dataDir: plugin state dir (status snapshot, settings file, catalog cache).
 # - displayName: cosmetic label in the model picker (route id stays providerId).
 # - providerId:  RENAME the route id itself (existing sessions pointing at the

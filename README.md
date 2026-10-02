@@ -3,7 +3,7 @@
 **Magpie LAN gateway models, natively inside DSH (DeepSeek Harness).**
 
 No extra process. Points at your configured gateway origin and serves
-every model from `GET /v1/models` in the DSH model picker as provider
+every model from the gateway's `GET …/models` in the DSH model picker as provider
 `dsh-magpie-connect` (picker label `magpie`).
 
 > The gateway is **not** configured out of the box: set the API URL **and**
@@ -34,6 +34,16 @@ connection (reports how many models the endpoint serves), and tick which
 models appear in the model picker. Everything saves to
 `~/.dsh-magpie-connect/settings.json` and applies immediately — no restart.
 
+**API 地址是带版本号的完整前缀**，例如 `http://api.lan/v1`：插件只往后拼资源名
+（`/models`、`/chat/completions`、`/responses`），**绝不自己补版本号**。网关以后
+上 `/v2`、`/v3` 时，只改这一个字符串即可，不会拼成 `/v2/v1/models`。尾斜杠会被
+去掉，路径原样保留。
+
+**获取可用模型** 打开候选弹窗：它问的是**表单当前显示的地址与 Key**（包括还没
+保存的），所以填一个新网关是一趟而不是"保存—返回—再看"。弹窗里可搜索、可全选/
+取消全选、逐个勾选，**应用选择**把勾选结果换算成隐藏集合；网关已经不再提供的旧 id
+不受影响，保持原样。查不通也不会卡死——失败信息就显示在列表下方，行仍然可以手改。
+
 Precedence per field: settings page > `cordis.patch.yml` config > defaults.
 Hidden models only come from the page; an empty list shows everything.
 
@@ -53,7 +63,7 @@ applies instantly) or via the profile's `cordis.patch.yml`:
   config:
     providerId: dsh-magpie-connect
     displayName: magpie
-    baseUrl: http://api.lan  # gateway origin (/v1 appended when missing)
+    baseUrl: http://api.lan/v1  # versioned API root — include the version
     apiKey: not-needed       # LAN gateway needs none
     refreshSeconds: 300
     maxRetries: 2
@@ -66,8 +76,8 @@ applies instantly) or via the profile's `cordis.patch.yml`:
 | --- | --- | --- |
 | `providerId` | `dsh-magpie-connect` | Provider name shown in DSH. |
 | `displayName` | `magpie` | Picker grouping label. |
-| `baseUrl` | `''` (not configured) | Gateway origin, e.g. `http://127.0.0.1:3425/v1`. Required. |
-| `apiKey` | `''` (not configured) | Bearer key. Required, even if `/v1/models` answers without one. |
+| `baseUrl` | `''` (not configured) | Versioned API root, e.g. `http://api.lan/v1`. The version is part of the value, not appended — a gateway on `/v2` is reached by changing this string. Required. |
+| `apiKey` | `''` (not configured) | Bearer key. Required, even if `/models` answers without one. |
 | `dataDir` | `~/.dsh-magpie-connect` | State dir (status, settings file, cache). |
 | `refreshSeconds` | `300` | Live catalog refresh interval. |
 | `maxRetries` | `2` | Connection-setup retries on 429/5xx. |
@@ -88,7 +98,7 @@ MagpieAdapter (registered LlmAdapter)
 http://api.lan/v1  ← chat/completions or responses per native_endpoints
 ```
 
-- **Catalog** — `GET /v1/models` 全量接入，无付费过滤；磁盘缓存 + 编译期静态
+- **Catalog** — `GET {baseUrl}/models` 全量接入，无付费过滤；磁盘缓存 + 编译期静态
   快照兜底，网关宕机时 picker 仍可用。任何暴露集合的变化（隐藏/显示、换网关
   地址、刷新后模型增删）都会 `emit('llm/adapters-updated')`，让浏览器那份
   catalog 缓存立即重读——否则 picker 会一直显示旧列表到下次重启。

@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, text, useLocaleRevision } from './i18n.ts'
+import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
+import { hideOne } from './model-visibility.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
+
+export type { ModelRow }
 
 const css: Record<string, Record<string, string | number>> = {
   section: { display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 780, paddingBottom: 32 },
@@ -14,30 +18,8 @@ const css: Record<string, Record<string, string | number>> = {
   field: { display: 'flex', flexDirection: 'column', gap: 8 },
   label: { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-secondary)' },
   hint: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
-  body: { margin: 0, fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-primary)' },
   error: { margin: 0, whiteSpace: 'pre-wrap', color: 'var(--dsw-alias-label-error, var(--dsw-alias-state-danger-label))' },
   ok: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-state-success-label, var(--dsw-alias-label-primary))' },
-  list: { display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 420, overflowY: 'auto', paddingRight: 4 },
-  item: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'transparent' },
-  itemHidden: { opacity: 0.55 },
-  checkbox: { marginTop: 3, width: 15, height: 15, accentColor: 'var(--dsw-alias-brand-primary)', flex: 'none', cursor: 'pointer' },
-  itemMain: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
-  itemId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-  chips: { display: 'flex', gap: 6, flexWrap: 'wrap' },
-  chip: { fontSize: 11, lineHeight: '18px', padding: '0 7px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' },
-  versionLink: { color: 'var(--dsw-alias-brand-primary)' },
-}
-
-export interface ModelRow {
-  id: string
-  displayName: string
-  contextWindow?: number
-  maxTokens?: number
-  image: boolean
-  responsesOnly: boolean
-  reasoning: boolean
-  efforts: string[]
-  hidden: boolean
 }
 
 interface Envelope {
@@ -84,20 +66,12 @@ async function request(path: string, method = 'GET', body?: unknown): Promise<un
   return payload.value
 }
 
-function formatWindow(value?: number): string {
-  if (value === undefined) return ''
-  if (value >= 1000000) return `${(value / 1000000).toFixed(value % 1000000 === 0 ? 0 : 1)}M`
-  if (value >= 1000) return `${Math.round(value / 1000)}k`
-  return String(value)
-}
-
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [hidden, setHidden] = useState<string[]>([])
   const [models, setModels] = useState<ModelRow[]>([])
-  const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState<'idle' | 'saving' | 'testing'>('idle')
   const [error, setError] = useState<string | undefined>(undefined)
   const [notice, setNotice] = useState<string | undefined>(undefined)
@@ -128,16 +102,11 @@ export function MagpieSettings(): unknown {
   }, [])
 
   const hiddenSet = useMemo(() => new Set(hidden), [hidden])
-  const visible = useMemo(() => {
-    const needle = filter.trim().toLowerCase()
-    const rows = needle === '' ? models : models.filter((row) => row.id.toLowerCase().includes(needle) || row.displayName.toLowerCase().includes(needle))
-    return rows
-  }, [models, filter])
-  const shownCount = models.length - hiddenSet.size
+  const visibleIds = useMemo(() => new Set(models.filter((row) => !hiddenSet.has(row.id)).map((row) => row.id)), [models, hiddenSet])
 
-  const toggle = (id: string): void => {
-    setHidden((prev) => (prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]))
-    setNotice(undefined)
+  const fetchCandidates = async (): Promise<readonly CandidateRow[]> => {
+    const result = (await request('/api/magpie-discover', 'POST', { baseUrl, apiKey })) as { models: CandidateRow[] }
+    return result.models ?? []
   }
 
   const save = async (): Promise<void> => {
@@ -153,6 +122,10 @@ export function MagpieSettings(): unknown {
       setBaseUrl(saved.baseUrl)
       setApiKey(saved.apiKey)
       setHidden(saved.hiddenModels ?? [])
+      // A save can move the origin or the visible set: re-read the rows so the
+      // list matches the picker the save just pushed out.
+      const modelsValue = (await request('/api/magpie-models')) as { models: ModelRow[] }
+      setModels(modelsValue.models ?? [])
       setNotice(text('saved'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -211,55 +184,21 @@ export function MagpieSettings(): unknown {
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
       </div>
 
-      <div style={css.card}>
-        <h3 style={css.cardTitle}>{text('models')}</h3>
-        <p style={css.hint}>
-          {text('showing', { shown: Math.max(shownCount, 0), total: models.length })} {text('saveHint')}
-        </p>
-        <div style={css.row}>
-          <Input value={filter} placeholder={text('search')} disabled={!loaded} onChange={(event: { currentTarget: { value: string } }) => setFilter(event.currentTarget.value)} style={{ flex: 1, minWidth: 180 }} />
-          <Button
-            variant="outline"
-            disabled={!loaded}
-            onClick={() => {
-              setHidden([])
-              setNotice(undefined)
-            }}
-          >
-            {text('showAll')}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={!loaded}
-            onClick={() => {
-              setHidden(models.map((row) => row.id))
-              setNotice(undefined)
-            }}
-          >
-            {text('hideAll')}
-          </Button>
-        </div>
-        <div style={css.list}>
-          {visible.map((row) => {
-            const isHidden = hiddenSet.has(row.id)
-            return (
-              <label key={row.id} style={{ ...css.item, ...(isHidden ? css.itemHidden : {}) }}>
-                <input type="checkbox" style={css.checkbox} checked={!isHidden} onChange={() => toggle(row.id)} aria-label={row.id} />
-                <span style={css.itemMain}>
-                  <span style={css.itemId}>{row.id}</span>
-                  <span style={css.chips}>
-                    {row.image ? <span style={css.chip}>{text('image')}</span> : null}
-                    {row.responsesOnly ? <span style={css.chip}>{text('responses')}</span> : null}
-                    {row.reasoning ? <span style={css.chip}>{`${text('reasoning')} · ${row.efforts.length}`}</span> : null}
-                    {row.contextWindow !== undefined ? <span style={css.chip}>{text('context', { window: formatWindow(row.contextWindow) })}</span> : null}
-                    {isHidden ? <span style={css.chip}>{text('hidden')}</span> : null}
-                  </span>
-                </span>
-              </label>
-            )
-          })}
-        </div>
-      </div>
+      <ModelListEditor
+        models={models}
+        visibleIds={visibleIds}
+        onFetch={fetchCandidates}
+        onRemove={(id) => {
+          setHidden((prev) => hideOne(prev, id))
+          setNotice(undefined)
+        }}
+        onHiddenChange={(next) => {
+          setHidden(next)
+          setNotice(undefined)
+        }}
+        disabled={!loaded || working}
+        fetchable={!incomplete}
+      />
 
       <p style={css.hint}>
         {text('pluginVersion')} dsh-magpie-connect v{PLUGIN_VERSION}

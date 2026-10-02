@@ -42,6 +42,12 @@ export declare const inject: readonly ["llm"];
 export declare const SETTINGS_API = "/api/magpie-settings";
 export declare const MODELS_API = "/api/magpie-models";
 export declare const TEST_API = "/api/magpie-test";
+/**
+ * Candidate discovery: asks the endpoint the form currently shows (including a
+ * key typed but not yet saved) what it serves. The reply is candidates the
+ * user picks from — never configuration written behind them.
+ */
+export declare const DISCOVER_API = "/api/magpie-discover";
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
     store: SettingsStore;
@@ -56,6 +62,19 @@ export interface SettingsBackend {
     };
     applyPageSettings: () => void;
 }
+interface ModelRow {
+    id: string;
+    displayName: string;
+    contextWindow?: number;
+    maxTokens?: number;
+    image: boolean;
+    responsesOnly: boolean;
+    reasoning: boolean;
+    efforts: string[];
+    hidden: boolean;
+}
+/** One discovered candidate: a {@link ModelRow} without this plugin's own visibility flag. */
+export type CandidateRow = Omit<ModelRow, 'hidden'>;
 /** @internal Test hook: forget installed routes so the next apply reinstalls. */
 export declare function __resetSettingsRoutes(): void;
 export declare function apply(ctx: PluginContext, config?: DshMagpieConnectConfig): {
