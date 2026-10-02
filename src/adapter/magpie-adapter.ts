@@ -36,10 +36,18 @@ export interface PiProviderLike {
   streamSimple(model: unknown, context: unknown, options: unknown): AsyncIterable<PiEvent>
 }
 
-/** Default picker label for the default route id. */
-export const DEFAULT_DISPLAY_NAME = 'magpie'
+/** Live endpoint read per request so the settings page applies without restart. */
+export interface RuntimeEndpoint {
+  /** Gateway origin, e.g. `http://api.lan` (no trailing slash). */
+  baseUrl(): string
+  /** Bearer key sent to the gateway. */
+  apiKey(): string
+}
 
 export const PROVIDER_ID = 'dsh-magpie-connect'
+
+/** Default picker label for the default route id. */
+export const DEFAULT_DISPLAY_NAME = 'magpie'
 
 export interface MagpieModelInfo {
   id: string
@@ -179,8 +187,10 @@ export class MagpieAdapter {
   readonly #provider: PiProviderLike
   readonly #providerId: string
   readonly #displayName: string
-  readonly #baseUrl: string
-  readonly #apiKey: string
+  /** Static fallback origin; the live settings page overrides per request. */
+  readonly #fallbackBaseUrl: string
+  readonly #fallbackApiKey: string
+  readonly #runtime?: RuntimeEndpoint
   readonly #maxRetries: number
   readonly #timeoutMs: number
   readonly #firstEventTimeoutMs: number
@@ -199,6 +209,11 @@ export class MagpieAdapter {
       displayName?: string
       /** Gateway credential (LAN needs none). */
       apiKey?: string
+      /**
+       * Live endpoint read per request (settings page). Falls back to the
+       * static `magpieBaseUrl`/`apiKey` options when absent.
+       */
+      runtime?: RuntimeEndpoint
       /** Connection-setup retries for 429/5xx (default 2). */
       maxRetries?: number
       /** Overall SDK request cap in ms (default 300000). */
@@ -214,9 +229,10 @@ export class MagpieAdapter {
     this.#catalog = catalog
     this.#providerId = options.providerId ?? PROVIDER_ID
     this.#displayName = options.displayName ?? (options.providerId ?? DEFAULT_DISPLAY_NAME)
-    const origin = (options.magpieBaseUrl ?? options.baseUrl ?? 'http://api.lan').replace(/\/+$/, '')
-    this.#baseUrl = `${origin}/v1`
-    this.#apiKey = options.apiKey ?? DEFAULT_API_KEY
+    const origin = (options.magpieBaseUrl ?? options.baseUrl ?? '').replace(/\/+$/, '')
+    this.#fallbackBaseUrl = origin === '' ? '' : `${origin}/v1`
+    this.#fallbackApiKey = options.apiKey ?? DEFAULT_API_KEY
+    this.#runtime = options.runtime
     this.#maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.#firstEventTimeoutMs = options.firstEventTimeoutMs ?? DEFAULT_FIRST_EVENT_TIMEOUT_MS
@@ -229,11 +245,11 @@ export class MagpieAdapter {
     this.#provider = createProvider<Api>({
       id: this.#providerId,
       name: this.#displayName,
-      baseUrl: this.#baseUrl,
+      baseUrl: this.#fallbackBaseUrl,
       auth: {
         apiKey: {
           name: 'Magpie LAN gateway',
-          resolve: async () => ({ auth: { apiKey: this.#apiKey } }),
+          resolve: async () => ({ auth: { apiKey: this.#runtime?.apiKey() ?? this.#fallbackApiKey } }),
         },
       },
       models: [],
@@ -319,6 +335,21 @@ export class MagpieAdapter {
     }
   }
 
+  /** Fail fast when no gateway origin is configured (picker stays empty too). */
+  #requireOrigin(): string {
+    const raw = this.#runtime?.baseUrl() ?? this.#fallbackBaseUrl.replace(/\/v1$/, '')
+    const origin = raw.replace(/\/+$/, '')
+    if (origin === '') {
+      throw new Error('dsh-magpie-connect: Magpie gateway API URL is not configured — open Settings → Magpie and set it')
+    }
+    return origin
+  }
+
+  /** Effective bearer key for this request. */
+  #wireApiKey(): string {
+    return this.#runtime?.apiKey() ?? this.#fallbackApiKey
+  }
+
   /**
    * Stream one chat turn from the Magpie gateway: a single pi-ai stream,
    * translated to harness chunks verbatim. Upstream failures (rate limit,
@@ -330,6 +361,7 @@ export class MagpieAdapter {
    * instead of hanging to the SDK/harness timeout.
    */
   async *stream(options: HarnessGenerateOptions): AsyncGenerator<HarnessChunk> {
+    const origin = this.#requireOrigin()
     const endpoints = this.#catalog.getEntry?.(options.model)?.nativeEndpoints ?? []
     const hasImage = contentHasImage(options.messages)
     if (hasImage && !(this.#catalog.supportsImage?.(options.model) ?? false)) {
@@ -338,7 +370,7 @@ export class MagpieAdapter {
     const context = hasImage
       ? await this.#imageContext(options, endpoints)
       : toPiContext(options, endpoints)
-    const model = toPiModel(this.#providerId, this.#baseUrl, options.model, this.#catalog)
+    const model = toPiModel(this.#providerId, `${origin}/v1`, options.model, this.#catalog)
     // Linked controller: the watchdog aborts the upstream on stall, while a
     // harness abort (user stop / host timeout) still propagates through.
     const controller = new AbortController()
@@ -379,7 +411,7 @@ export class MagpieAdapter {
     // the ladder, and omission keeps the gateway default.
     const reasoningEffort = planReasoningEffort(options.reasoningEffort, options.model, this.#catalog)
     return this.#provider.stream(model, context as unknown as Context, {
-      apiKey: this.#apiKey,
+      apiKey: this.#wireApiKey(),
       signal,
       maxRetries: this.#maxRetries,
       timeoutMs: this.#timeoutMs,

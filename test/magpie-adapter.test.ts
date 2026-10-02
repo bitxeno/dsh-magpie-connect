@@ -29,28 +29,28 @@ function catalogStub(entries: Record<string, { image?: boolean; reasoning?: bool
 }
 
 test('MagpieAdapter implements the full dsh-llm adapter surface', () => {
-  const adapter = new MagpieAdapter(new ModelCatalog())
+  const adapter = testAdapter(new ModelCatalog())
   for (const method of ['providerInfo', 'providerRetryPolicy', 'listModels', 'resolveModel', 'prepareCall', 'stream']) {
     assert.equal(typeof (adapter as unknown as Record<string, unknown>)[method], 'function', `missing method: ${method}`)
   }
 })
 
 test('providerInfo preserves the route id and reports the display name', () => {
-  const adapter = new MagpieAdapter(new ModelCatalog())
+  const adapter = testAdapter(new ModelCatalog())
   assert.deepEqual(adapter.providerInfo('dsh-magpie-connect'), { id: 'dsh-magpie-connect', name: 'magpie' })
-  const renamed = new MagpieAdapter(new ModelCatalog(), { providerId: 'lan', displayName: 'LAN Models' })
+  const renamed = testAdapter(new ModelCatalog(), { providerId: 'lan', displayName: 'LAN Models' })
   assert.deepEqual(renamed.providerInfo('lan'), { id: 'lan', name: 'LAN Models' })
 })
 
 test('providerRetryPolicy defers to the host default', () => {
-  const adapter = new MagpieAdapter(new ModelCatalog())
+  const adapter = testAdapter(new ModelCatalog())
   assert.equal(adapter.providerRetryPolicy('dsh-magpie-connect'), undefined)
 })
 
 test('listModels mirrors the catalog with image modalities and no duplicates', () => {
-  const adapter = new MagpieAdapter(catalogStub({ a: { image: true }, b: { image: false } }))
+  const adapter = testAdapter(catalogStub({ a: { image: true }, b: { image: false } }))
   // inject a duplicate via list override
-  const dup = new MagpieAdapter({
+  const dup = testAdapter({
     ...catalogStub({ a: { image: true } }),
     list: () => ['a', 'a'],
   })
@@ -61,7 +61,7 @@ test('listModels mirrors the catalog with image modalities and no duplicates', (
 })
 
 test('resolveModel declares limits, modalities and the reasoning picker', () => {
-  const adapter = new MagpieAdapter(
+  const adapter = testAdapter(
     catalogStub({
       'vercel/openai/gpt-4.1': { image: true, reasoning: false, context: 1047576, max: 32768 },
       'opencode-zen/muse-spark-1.3-contributor-free': { image: true, reasoning: true, efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], responses: true, context: 1048576, max: 131072 },
@@ -211,9 +211,14 @@ function finishOf(chunks: HarnessChunk[]): HarnessChunk {
 
 const textCatalog = catalogStub({ m: { image: false, reasoning: false } })
 
+/** Test adapters point at a stub origin unless the case says otherwise. */
+function testAdapter(catalog: CatalogLike, options: ConstructorParameters<typeof MagpieAdapter>[1] = {}): MagpieAdapter {
+  return new MagpieAdapter(catalog, { magpieBaseUrl: 'http://test.lan', ...options })
+}
+
 test('text streams through verbatim with usage then a single finish', async () => {
   const seen: SeenCall[] = []
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('AAA', 'stop')], seen) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('AAA', 'stop')], seen) })
   const chunks = await collectChunks(adapter, streamOptions())
   const texts = chunks.filter((c) => c.type === 'text-delta').map((c) => (c as { text: string }).text)
   assert.deepEqual(texts, ['AAA'])
@@ -225,7 +230,7 @@ test('text streams through verbatim with usage then a single finish', async () =
 
 test('a length finish is surfaced honestly (no auto-continuation)', async () => {
   const seen: SeenCall[] = []
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('AAA', 'length')], seen) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('AAA', 'length')], seen) })
   const chunks = await collectChunks(adapter, streamOptions())
   assert.deepEqual((finishOf(chunks) as { reason: unknown }).reason, { kind: 'max-tokens' })
 })
@@ -236,7 +241,7 @@ test('thinking levels forward verbatim (none/ultra included)', async () => {
     terra: { image: false, reasoning: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], responses: true },
     qwen: { image: false, reasoning: true, efforts: ['none', 'low', 'medium', 'xhigh'] },
   })
-  const adapter = new MagpieAdapter(catalog, { providerOverride: cannedProvider([textLeg('hi', 'stop'), textLeg('hi', 'stop')], seen) })
+  const adapter = testAdapter(catalog, { providerOverride: cannedProvider([textLeg('hi', 'stop'), textLeg('hi', 'stop')], seen) })
   await collectChunks(adapter, streamOptions({ model: 'terra', reasoningEffort: 'ultra' }))
   assert.equal(seen[0]?.reasoningEffort, 'ultra')
   await collectChunks(adapter, streamOptions({ model: 'qwen', reasoningEffort: 'none' }))
@@ -245,18 +250,18 @@ test('thinking levels forward verbatim (none/ultra included)', async () => {
 
 test('host maxTokens passes through uncapped, missing falls back to the model limit', async () => {
   const seen: SeenCall[] = []
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
   await collectChunks(adapter, streamOptions({ maxTokens: 65536 }))
   assert.equal(seen[0]?.maxTokens, 65536)
   const seen2: SeenCall[] = []
-  const adapter2 = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen2) })
+  const adapter2 = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen2) })
   await collectChunks(adapter2, streamOptions())
   assert.equal(seen2[0]?.maxTokens, 32768)
 })
 
 test('connection setup uses explicit retries/timeout instead of bare SDK defaults', async () => {
   const seen: SeenCall[] = []
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
   await collectChunks(adapter, streamOptions())
   assert.equal(seen[0]?.maxRetries, 2)
   assert.equal(seen[0]?.timeoutMs, 300_000)
@@ -265,7 +270,7 @@ test('connection setup uses explicit retries/timeout instead of bare SDK default
 
 test('a harness abort reaches the upstream as an aborted signal', async () => {
   const seen: SeenCall[] = []
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
   await collectChunks(adapter, streamOptions({ signal: AbortSignal.abort() }))
   assert.equal(seen[0]?.signalAborted, true)
 })
@@ -283,7 +288,7 @@ test('a stalled upstream fails fast as TIMEOUT instead of hanging', async () => 
         yield { type: 'start', partial: { content: [] } } as PiEvent
       })(),
   }
-  const adapter = new MagpieAdapter(textCatalog, {
+  const adapter = testAdapter(textCatalog, {
     providerOverride: hangingProvider,
     firstEventTimeoutMs: 20,
     idleTimeoutMs: 20,
@@ -300,7 +305,7 @@ test('a stalled upstream fails fast as TIMEOUT instead of hanging', async () => 
 
 test('image input without the attachment service fails with a clear error', async () => {
   const catalog = catalogStub({ img: { image: true, reasoning: false } })
-  const adapter = new MagpieAdapter(catalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')]) })
+  const adapter = testAdapter(catalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')]) })
   await assert.rejects(
     collectChunks(
       adapter,
@@ -311,7 +316,7 @@ test('image input without the attachment service fails with a clear error', asyn
 })
 
 test('image input on a text-only model is rejected before the wire', async () => {
-  const adapter = new MagpieAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')]) })
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')]) })
   await assert.rejects(
     collectChunks(
       adapter,
@@ -329,7 +334,7 @@ test('image input resolves bytes and streams', async () => {
       return { data: new Uint8Array([1, 2, 3]), mediaType: ref.mediaType, bytes: 3, width: ref.width, height: ref.height }
     },
   }
-  const adapter = new MagpieAdapter(catalog, {
+  const adapter = testAdapter(catalog, {
     providerOverride: cannedProvider([textLeg('saw it', 'stop')], seen),
     resolveAttachments: () => attachments,
   })
@@ -342,4 +347,80 @@ test('image input resolves bytes and streams', async () => {
   )
   assert.deepEqual((finishOf(chunks) as { reason: unknown }).reason, { kind: 'stop' })
   assert.equal(seen.length, 1)
+})
+
+test('live runtime endpoint overrides the static baseUrl/apiKey per request', async () => {
+  const seen: SeenCall[] = []
+  const origin = 'http://page.lan'
+  const adapter = testAdapter(textCatalog, {
+    providerOverride: cannedProvider([textLeg('hi', 'stop')], seen),
+    magpieBaseUrl: 'http://static.lan',
+    apiKey: 'static-key',
+    runtime: {
+      baseUrl: () => origin,
+      apiKey: () => 'page-key',
+    },
+  })
+  await collectChunks(adapter, streamOptions())
+  assert.equal((seen[0]?.wireModel.baseUrl as string), 'http://page.lan/v1')
+})
+
+test('runtime apiKey reaches the provider options', async () => {
+  const calls: Array<{ apiKey: unknown }> = []
+  const provider = {
+    stream: (_model: unknown, _ctx: unknown, options: { apiKey: unknown }) => {
+      calls.push({ apiKey: options.apiKey })
+      return (async function* (): AsyncGenerator<PiEvent> {
+        yield legDone('hi', 'stop')
+      })()
+    },
+    streamSimple: (_model: unknown, _ctx: unknown, options: { apiKey: unknown }) => {
+      calls.push({ apiKey: options.apiKey })
+      return (async function* (): AsyncGenerator<PiEvent> {
+        yield legDone('hi', 'stop')
+      })()
+    },
+  }
+  const adapter = testAdapter(textCatalog, {
+    providerOverride: provider,
+    runtime: { baseUrl: () => 'http://page.lan', apiKey: () => 'page-key' },
+  })
+  await collectChunks(adapter, streamOptions())
+  assert.equal(calls[0]?.apiKey, 'page-key')
+})
+
+test('without runtime the static options apply', async () => {
+  const seen: SeenCall[] = []
+  const adapter = testAdapter(textCatalog, {
+    providerOverride: cannedProvider([textLeg('hi', 'stop')], seen),
+    magpieBaseUrl: 'http://static.lan/',
+    apiKey: 'static-key',
+  })
+  await collectChunks(adapter, streamOptions())
+  assert.equal(seen[0]?.wireModel.baseUrl, 'http://static.lan/v1')
+})
+
+test('stream without a configured origin fails fast instead of calling the wire', async () => {
+  let calls = 0
+  const provider = {
+    stream: () => {
+      calls += 1
+      return (async function* (): AsyncGenerator<PiEvent> {
+        yield legDone('hi', 'stop')
+      })()
+    },
+    streamSimple: () => {
+      calls += 1
+      return (async function* (): AsyncGenerator<PiEvent> {
+        yield legDone('hi', 'stop')
+      })()
+    },
+  }
+  const unconfigured = testAdapter(textCatalog, {
+    providerOverride: provider,
+    magpieBaseUrl: '',
+    runtime: { baseUrl: () => '', apiKey: () => 'not-needed' },
+  })
+  await assert.rejects(collectChunks(unconfigured, streamOptions()), /not configured/)
+  assert.equal(calls, 0)
 })

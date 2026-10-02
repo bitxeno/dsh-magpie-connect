@@ -18,9 +18,16 @@ export interface PiProviderLike {
     stream(model: unknown, context: unknown, options: unknown): AsyncIterable<PiEvent>;
     streamSimple(model: unknown, context: unknown, options: unknown): AsyncIterable<PiEvent>;
 }
+/** Live endpoint read per request so the settings page applies without restart. */
+export interface RuntimeEndpoint {
+    /** Gateway origin, e.g. `http://api.lan` (no trailing slash). */
+    baseUrl(): string;
+    /** Bearer key sent to the gateway. */
+    apiKey(): string;
+}
+export declare const PROVIDER_ID = "dsh-magpie-connect";
 /** Default picker label for the default route id. */
 export declare const DEFAULT_DISPLAY_NAME = "magpie";
-export declare const PROVIDER_ID = "dsh-magpie-connect";
 export interface MagpieModelInfo {
     id: string;
     name: string;
@@ -87,6 +94,11 @@ export declare class MagpieAdapter {
         displayName?: string;
         /** Gateway credential (LAN needs none). */
         apiKey?: string;
+        /**
+         * Live endpoint read per request (settings page). Falls back to the
+         * static `magpieBaseUrl`/`apiKey` options when absent.
+         */
+        runtime?: RuntimeEndpoint;
         /** Connection-setup retries for 429/5xx (default 2). */
         maxRetries?: number;
         /** Overall SDK request cap in ms (default 300000). */

@@ -1,10 +1,17 @@
 # dsh-magpie-connect DSH plugin — bundle patch: insert the plugin row (deployment-global).
 #
-# Defaults point at the LAN gateway with no key. Override any option via the
-# config object below (see src/config.ts).
+# The gateway is NOT configured out of the box: set baseUrl on the Settings
+# sidebar page ("Magpie") or via the config object below (see src/config.ts).
+# Until an origin is set the picker stays empty and calls fail fast.
 #
-# - baseUrl: gateway origin (models + chat/completions + responses live under it).
-# - apiKey:  gateway credential; the LAN gateway needs none ('not-needed' is sent).
+# The Settings sidebar page can override baseUrl/apiKey at runtime
+# (saved to <dataDir>/settings.json, applied without restart) and hides models
+# from the picker. Page values win per-field; the patch config below stays as
+# fallback (e.g. headless compositions without the settings page).
+#
+# - baseUrl: gateway origin, e.g. http://127.0.0.1:3425/v1 (required).
+# - apiKey:  gateway credential (required, even if /v1/models needs none).
+# - dataDir: plugin state dir (status snapshot, settings file, catalog cache).
 # - displayName: cosmetic label in the model picker (route id stays providerId).
 # - providerId:  RENAME the route id itself (existing sessions pointing at the
 #   old id will orphan — prefer displayName for a cosmetic rename).

@@ -1,12 +1,3 @@
-/**
- * Plugin configuration (cordis config object, injected via cordis.patch.yml).
- *
- * The adapter registers a DSH LlmAdapter streaming directly from the Magpie
- * LAN gateway (`{baseUrl}/v1`): chat completions for most models plus the
- * Responses API for responses-only models. No child process, no proxy/pool.
- * The LAN gateway needs no credential — `apiKey` defaults to a sentinel that
- * satisfies the pi-ai client without changing the wire.
- */
 export interface DshMagpieConnectConfig {
     /**
      * Provider route id registered into DSH (the grouping key in the model
@@ -21,10 +12,15 @@ export interface DshMagpieConnectConfig {
      * otherwise to `'magpie'`.
      */
     displayName?: string;
-    /** Gateway origin, e.g. `http://api.lan`. `/v1` is appended when missing. */
+    /** Gateway origin, e.g. `http://api.lan`. `/v1` is appended when missing. Empty = not configured. */
     baseUrl?: string;
-    /** Gateway credential; LAN needs none. Sent as the Bearer key. */
+    /** Gateway credential. Required: empty means not configured (key or URL missing both gate). */
     apiKey?: string;
+    /**
+     * Plugin state directory (status snapshot, settings file, catalog cache).
+     * Defaults to `~/.dsh-magpie-connect`.
+     */
+    dataDir?: string;
     /** Model list refresh interval in seconds. */
     refreshSeconds?: number;
     /**
@@ -48,8 +44,8 @@ export interface DshMagpieConnectConfig {
 export declare const defaults: {
     readonly providerId: "dsh-magpie-connect";
     readonly displayName: "magpie";
-    readonly baseUrl: "http://api.lan";
-    readonly apiKey: "not-needed";
+    readonly baseUrl: "";
+    readonly apiKey: "";
     readonly refreshSeconds: 300;
     readonly maxRetries: 2;
     readonly timeoutMs: 300000;
@@ -60,5 +56,6 @@ export type ResolvedConfig = Required<Pick<DshMagpieConnectConfig, 'providerId' 
     displayName: string;
     baseUrl: string;
     apiKey: string;
+    dataDir: string;
 };
 export declare function resolveConfig(config?: DshMagpieConnectConfig): ResolvedConfig;

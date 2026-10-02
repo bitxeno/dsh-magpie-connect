@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
  * outages (the plugin still registers, the picker still lists).
  */
 
+/** Conventional LAN origin (example value, not a default — empty means unconfigured). */
 export const MAGPIE_DEFAULT_BASE_URL = 'http://api.lan'
 
 export interface MagpieModelEntry {
@@ -220,6 +221,7 @@ const FETCH_TIMEOUT_MS = 30_000
 /** Live model directory with refresh loop. All state in-memory; only the gateway snapshot persists. */
 export class ModelCatalog {
   #entries: Map<string, MagpieModelEntry> = new Map()
+  #hidden: Set<string> = new Set()
   #updatedAt = 0
   #lastError = ''
   #refreshSeconds: number
@@ -235,7 +237,7 @@ export class ModelCatalog {
   constructor(options: CatalogOptions = {}) {
     this.#refreshSeconds = options.refreshSeconds ?? 300
     this.#cachePath = options.cachePath
-    this.#baseUrl = (options.baseUrl ?? MAGPIE_DEFAULT_BASE_URL).replace(/\/+$/, '')
+    this.#baseUrl = (options.baseUrl ?? '').replace(/\/+$/, '')
     this.#fetch = options.fetchImpl ?? fetch
     this.#now = options.now ?? Date.now
     this.#onRefresh = options.onRefresh
@@ -282,7 +284,16 @@ export class ModelCatalog {
     }
   }
 
+  /** Whether a gateway origin is configured (empty baseUrl = not configured). */
+  get configured(): boolean {
+    return this.#baseUrl !== ''
+  }
+
   async refreshModels(): Promise<void> {
+    if (!this.configured) {
+      this.#lastError = 'magpie gateway baseUrl is not configured — set it on the Magpie settings page'
+      return
+    }
     try {
       const entries = await fetchMagpieModels(this.#baseUrl, this.#fetch)
       this.#entries = entries
@@ -307,11 +318,49 @@ export class ModelCatalog {
     return this.#entries.get(model)
   }
 
+  /** Replace the settings-page hidden set (models excluded from the picker). */
+  setHidden(ids: readonly string[]): void {
+    this.#hidden = new Set(ids)
+  }
+
+  /** Currently hidden model ids. */
+  hidden(): string[] {
+    return [...this.#hidden]
+  }
+
+  isHidden(model: string): boolean {
+    return this.#hidden.has(model)
+  }
+
+  /** Point the refresh loop at another gateway origin (settings page change). */
+  setBaseUrl(baseUrl: string): void {
+    const origin = baseUrl.replace(/\/+$/, '')
+    if (origin === this.#baseUrl) return
+    this.#baseUrl = origin
+    // Drop entries from the previous origin: the picker must not serve a
+    // stale directory, and clearing unconfigured state must empty it.
+    this.#entries = new Map()
+    this.#updatedAt = 0
+    this.#lastError = origin === '' ? 'magpie gateway baseUrl is not configured — set it on the Magpie settings page' : ''
+  }
+
+  get baseUrl(): string {
+    return this.#baseUrl
+  }
+
   decision(model: string): { allowed: boolean; source: string; known: boolean } {
+    if (!this.configured) return { allowed: false, source: 'unconfigured', known: false }
+    if (this.#hidden.has(model)) return { allowed: false, source: 'hidden_by_settings', known: true }
     if (this.#entries.has(model)) return { allowed: true, source: 'gateway', known: true }
     const fallback = staticMagpieModels.find((entry) => entry.id === model)
     if (fallback) return { allowed: true, source: 'static_verified', known: false }
     return { allowed: false, source: this.#entries.size === 0 ? 'gateway_pending' : 'gateway_unknown', known: false }
+  }
+
+  /** Entry lookup: live map first, static snapshot while configured (never unconfigured). */
+  #entryFor(model: string): MagpieModelEntry | undefined {
+    if (!this.configured) return undefined
+    return this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
   }
 
   /**
@@ -321,7 +370,7 @@ export class ModelCatalog {
    * `thinks()` — and expose no picker.
    */
   reasoningFor(model: string): { efforts: ReasoningEffortChoice[]; defaultEffort: string } | undefined {
-    const entry = this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
+    const entry = this.#entryFor(model)
     const efforts = entry?.efforts
     if (!entry?.reasoning) return undefined
     if (efforts !== undefined && efforts.length > 0) {
@@ -333,42 +382,43 @@ export class ModelCatalog {
 
   /** Whether the wire model may think (pi-ai `reasoning: true`). */
   thinks(model: string): boolean {
-    const entry = this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
+    const entry = this.#entryFor(model)
     return entry?.reasoning ?? false
   }
 
   /** Whether the model accepts image input. */
   supportsImage(model: string): boolean {
-    const entry = this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
+    const entry = this.#entryFor(model)
     return entry?.image ?? false
   }
 
   /** Whether one effort id is selectable for the model. */
   supportsEffort(model: string, effort: string): boolean {
-    const entry = this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
+    const entry = this.#entryFor(model)
     if (!entry?.reasoning) return false
     if (!entry.efforts || entry.efforts.length === 0) return true // ladder-less: upstream accepts, picker hidden
     return entry.efforts.includes(effort)
   }
 
   requiresResponsesApi(model: string): boolean {
-    const entry = this.#entries.get(model) ?? staticMagpieModels.find((candidate) => candidate.id === model)
+    const entry = this.#entryFor(model)
     if (!entry) return /muse-spark|codex\/|grok/i.test(model)
     return requiresResponsesApiEntry(entry.nativeEndpoints)
   }
 
   contextWindowFor(model: string): number {
-    return this.#entries.get(model)?.contextWindow ?? staticMagpieModels.find((e) => e.id === model)?.contextWindow ?? 262144
+    return this.#entryFor(model)?.contextWindow ?? 262144
   }
 
   maxTokensFor(model: string): number {
-    return this.#entries.get(model)?.maxTokens ?? staticMagpieModels.find((e) => e.id === model)?.maxTokens ?? 32768
+    return this.#entryFor(model)?.maxTokens ?? 32768
   }
 
-  /** ids exposed to DSH: live gateway list, or the static snapshot while pending. */
+  /** ids exposed to DSH: live gateway list minus hidden (empty while unconfigured). */
   list(): string[] {
-    if (this.#entries.size === 0) return staticMagpieModels.map((entry) => entry.id)
-    return [...this.#entries.keys()].sort()
+    if (!this.configured) return []
+    if (this.#entries.size === 0) return staticMagpieModels.map((entry) => entry.id).filter((id) => !this.#hidden.has(id))
+    return [...this.#entries.keys()].filter((id) => !this.#hidden.has(id)).sort()
   }
 
   /** Catalog health snapshot (pending/ready/stale + counts). */

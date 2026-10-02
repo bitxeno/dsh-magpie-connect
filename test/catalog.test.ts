@@ -174,7 +174,7 @@ test('ModelCatalog falls back to the static snapshot while the gateway is down',
   const fail = (async () => {
     throw new Error('network down')
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: fail })
+  const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://api.lan' })
   await catalog.refreshOnce()
   assert.deepEqual(catalog.list(), staticMagpieModels.map((entry) => entry.id))
   assert.equal(catalog.decision('vercel/openai/gpt-4.1').allowed, true)
@@ -195,11 +195,45 @@ test('start() fast-retries while the live catalog is empty, then settles', async
     }
     throw new Error('unexpected')
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: flaky, startupRetryMs: 5, refreshSeconds: 3600 })
+  const catalog = new ModelCatalog({ fetchImpl: flaky, baseUrl: 'http://api.lan', startupRetryMs: 5, refreshSeconds: 3600 })
   try {
     await catalog.start()
     assert.equal(catalog.snapshot().total, 4)
     assert.equal(calls, 3)
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('unconfigured catalog exposes nothing and never fetches', async () => {
+  let calls = 0
+  const spy = (async () => {
+    calls += 1
+    throw new Error('must not fetch')
+  }) as typeof fetch
+  const catalog = new ModelCatalog({ fetchImpl: spy })
+  try {
+    assert.equal(catalog.configured, false)
+    await catalog.refreshOnce()
+    assert.equal(calls, 0)
+    assert.deepEqual(catalog.list(), [])
+    assert.deepEqual(catalog.decision('codex/gpt-5.6-terra'), { allowed: false, source: 'unconfigured', known: false })
+    assert.equal(catalog.thinks('codex/gpt-5.6-terra'), false)
+    assert.equal(catalog.reasoningFor('codex/gpt-5.6-terra'), undefined)
+    assert.equal(catalog.lastError, 'magpie gateway baseUrl is not configured — set it on the Magpie settings page')
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('clearing the baseUrl empties a previously live catalog', async () => {
+  const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }), baseUrl: 'http://api.lan' })
+  try {
+    await catalog.refreshOnce()
+    assert.equal(catalog.list().length, 4)
+    catalog.setBaseUrl('')
+    assert.equal(catalog.configured, false)
+    assert.deepEqual(catalog.list(), [])
   } finally {
     catalog.stop()
   }

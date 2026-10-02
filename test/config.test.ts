@@ -6,8 +6,8 @@ test('resolveConfig fills defaults and keeps overrides', () => {
   const base = resolveConfig()
   assert.equal(base.providerId, defaults.providerId)
   assert.equal(base.displayName, 'magpie')
-  assert.equal(base.baseUrl, 'http://api.lan')
-  assert.equal(base.apiKey, 'not-needed')
+  assert.equal(base.baseUrl, '')
+  assert.equal(base.apiKey, '')
   assert.equal(base.refreshSeconds, 300)
   assert.equal(base.maxRetries, 2)
   assert.equal(base.timeoutMs, 300_000)
@@ -37,4 +37,9 @@ test('baseUrl/apiKey point at the LAN gateway by default and accept overrides', 
   const custom = resolveConfig({ baseUrl: 'http://192.168.1.10:8080/', apiKey: 'secret' })
   assert.equal(custom.baseUrl, 'http://192.168.1.10:8080/')
   assert.equal(custom.apiKey, 'secret')
+})
+
+test('dataDir defaults to the home dotdir and accepts overrides', () => {
+  assert.match(resolveConfig().dataDir, /\.dsh-magpie-connect$/)
+  assert.equal(resolveConfig({ dataDir: '/tmp/x' }).dataDir, '/tmp/x')
 })

@@ -1,7 +1,7 @@
 {
   "name": "dsh-magpie-connect",
   "description": "Magpie LAN gateway models for DeepSeek Harness (DSH): native dsh-llm adapter plugin with image + responses + thinking levels.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -9,6 +9,9 @@
     ".": {
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
   },
@@ -18,6 +21,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
     }
   },
   "files": [

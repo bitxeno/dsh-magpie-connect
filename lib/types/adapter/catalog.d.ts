@@ -7,6 +7,7 @@
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
  */
+/** Conventional LAN origin (example value, not a default — empty means unconfigured). */
 export declare const MAGPIE_DEFAULT_BASE_URL = "http://api.lan";
 export interface MagpieModelEntry {
     id: string;
@@ -105,8 +106,18 @@ export declare class ModelCatalog {
     start(): Promise<void>;
     stop(): void;
     refreshOnce(): Promise<void>;
+    /** Whether a gateway origin is configured (empty baseUrl = not configured). */
+    get configured(): boolean;
     refreshModels(): Promise<void>;
     getEntry(model: string): MagpieModelEntry | undefined;
+    /** Replace the settings-page hidden set (models excluded from the picker). */
+    setHidden(ids: readonly string[]): void;
+    /** Currently hidden model ids. */
+    hidden(): string[];
+    isHidden(model: string): boolean;
+    /** Point the refresh loop at another gateway origin (settings page change). */
+    setBaseUrl(baseUrl: string): void;
+    get baseUrl(): string;
     decision(model: string): {
         allowed: boolean;
         source: string;
@@ -131,7 +142,7 @@ export declare class ModelCatalog {
     requiresResponsesApi(model: string): boolean;
     contextWindowFor(model: string): number;
     maxTokensFor(model: string): number;
-    /** ids exposed to DSH: live gateway list, or the static snapshot while pending. */
+    /** ids exposed to DSH: live gateway list minus hidden (empty while unconfigured). */
     list(): string[];
     /** Catalog health snapshot (pending/ready/stale + counts). */
     snapshot(): CatalogSnapshot;

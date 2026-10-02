@@ -6,7 +6,13 @@
  * Responses API for responses-only models. No child process, no proxy/pool.
  * The LAN gateway needs no credential — `apiKey` defaults to a sentinel that
  * satisfies the pi-ai client without changing the wire.
+ *
+ * The settings sidebar page can override `baseUrl`/`apiKey` at runtime (saved
+ * to `<dataDir>/settings.json`, applied without restart) and hides models
+ * from the picker. Page values win per-field; patch config is the fallback.
  */
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 export interface DshMagpieConnectConfig {
   /**
    * Provider route id registered into DSH (the grouping key in the model
@@ -21,10 +27,15 @@ export interface DshMagpieConnectConfig {
    * otherwise to `'magpie'`.
    */
   displayName?: string
-  /** Gateway origin, e.g. `http://api.lan`. `/v1` is appended when missing. */
+  /** Gateway origin, e.g. `http://api.lan`. `/v1` is appended when missing. Empty = not configured. */
   baseUrl?: string
-  /** Gateway credential; LAN needs none. Sent as the Bearer key. */
+  /** Gateway credential. Required: empty means not configured (key or URL missing both gate). */
   apiKey?: string
+  /**
+   * Plugin state directory (status snapshot, settings file, catalog cache).
+   * Defaults to `~/.dsh-magpie-connect`.
+   */
+  dataDir?: string
   /** Model list refresh interval in seconds. */
   refreshSeconds?: number
   /**
@@ -49,8 +60,8 @@ export interface DshMagpieConnectConfig {
 export const defaults = {
   providerId: 'dsh-magpie-connect',
   displayName: 'magpie',
-  baseUrl: 'http://api.lan',
-  apiKey: 'not-needed',
+  baseUrl: '',
+  apiKey: '',
   refreshSeconds: 300,
   maxRetries: 2,
   timeoutMs: 300_000,
@@ -61,7 +72,7 @@ export const defaults = {
 export type ResolvedConfig = Required<
   Pick<DshMagpieConnectConfig, 'providerId' | 'refreshSeconds'>
 > &
-  DshMagpieConnectConfig & { displayName: string; baseUrl: string; apiKey: string }
+  DshMagpieConnectConfig & { displayName: string; baseUrl: string; apiKey: string; dataDir: string }
 
 export function resolveConfig(config: DshMagpieConnectConfig = {}): ResolvedConfig {
   const providerId = config.providerId ?? defaults.providerId
@@ -72,5 +83,6 @@ export function resolveConfig(config: DshMagpieConnectConfig = {}): ResolvedConf
     displayName: config.displayName ?? (config.providerId ?? defaults.displayName),
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     apiKey: config.apiKey ?? defaults.apiKey,
+    dataDir: config.dataDir ?? join(homedir(), '.dsh-magpie-connect'),
   }
 }

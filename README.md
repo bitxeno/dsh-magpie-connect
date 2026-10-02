@@ -2,9 +2,14 @@
 
 **Magpie LAN gateway models, natively inside DSH (DeepSeek Harness).**
 
-No API key. No extra process. Points at `http://api.lan` by default and serves
+No extra process. Points at your configured gateway origin and serves
 every model from `GET /v1/models` in the DSH model picker as provider
 `dsh-magpie-connect` (picker label `magpie`).
+
+> The gateway is **not** configured out of the box: set the API URL **and**
+> API key on the Settings → Magpie page (or via `cordis.patch.yml`). Both
+> are required — until then the picker stays empty and calls fail fast with
+> a "not configured" error.
 
 - **双接口** — `/v1/chat/completions` 与 `/v1/responses` 按模型 `native_endpoints`
   自动分流（Muse Spark / Codex / Grok 走 responses，其余走 completions）
@@ -22,9 +27,20 @@ dsh plugin --profile web add dsh-magpie-connect
 Restart `dsh web` after installing. Requires DSH with a web profile;
 Node.js ≥ 20; LAN route to `http://api.lan`.
 
+## Settings page
+
+Settings → Magpie 网关 (sidebar): edit the API URL and API key, test the
+connection (reports how many models the endpoint serves), and tick which
+models appear in the model picker. Everything saves to
+`~/.dsh-magpie-connect/settings.json` and applies immediately — no restart.
+
+Precedence per field: settings page > `cordis.patch.yml` config > defaults.
+Hidden models only come from the page; an empty list shows everything.
+
 ## Configuration
 
-Defaults work out of the box. Override via the profile's `cordis.patch.yml`:
+Set the gateway URL first — either on the Settings → Magpie page (recommended,
+applies instantly) or via the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: dsh-magpie-connect
@@ -45,8 +61,9 @@ Defaults work out of the box. Override via the profile's `cordis.patch.yml`:
 | --- | --- | --- |
 | `providerId` | `dsh-magpie-connect` | Provider name shown in DSH. |
 | `displayName` | `magpie` | Picker grouping label. |
-| `baseUrl` | `http://api.lan` | Gateway origin. |
-| `apiKey` | `not-needed` | Bearer key (LAN needs none). |
+| `baseUrl` | `''` (not configured) | Gateway origin, e.g. `http://127.0.0.1:3425/v1`. Required. |
+| `apiKey` | `''` (not configured) | Bearer key. Required, even if `/v1/models` answers without one. |
+| `dataDir` | `~/.dsh-magpie-connect` | State dir (status, settings file, cache). |
 | `refreshSeconds` | `300` | Live catalog refresh interval. |
 | `maxRetries` | `2` | Connection-setup retries on 429/5xx. |
 | `timeoutMs` | `300000` | Overall upstream request cap in ms. |
