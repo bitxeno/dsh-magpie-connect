@@ -14,17 +14,17 @@ import {
 import { ModelCatalog } from '../src/adapter/catalog.ts'
 
 test('normalizeBaseUrl keeps the version path and strips only a trailing slash', () => {
-  assert.equal(normalizeBaseUrl('http://api.lan'), 'http://api.lan')
-  assert.equal(normalizeBaseUrl('http://api.lan/'), 'http://api.lan')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425'), 'http://127.0.0.1:3425')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/'), 'http://127.0.0.1:3425')
   // The version segment is the user's to choose: it must survive a save, so a
   // gateway on /v2 or /v3 stays reachable by editing one string.
-  assert.equal(normalizeBaseUrl('http://api.lan/v1'), 'http://api.lan/v1')
-  assert.equal(normalizeBaseUrl('http://api.lan/v1/'), 'http://api.lan/v1')
-  assert.equal(normalizeBaseUrl('http://api.lan/v2'), 'http://api.lan/v2')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/v1'), 'http://127.0.0.1:3425/v1')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/v1/'), 'http://127.0.0.1:3425/v1')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/v2'), 'http://127.0.0.1:3425/v2')
   assert.equal(normalizeBaseUrl('https://example.com:8080/api/v3/'), 'https://example.com:8080/api/v3')
   // Query/fragment are never part of a base URL and would corrupt appended paths.
-  assert.equal(normalizeBaseUrl('http://api.lan/v1?x=1'), 'http://api.lan/v1')
-  assert.equal(normalizeBaseUrl('http://api.lan/v1#frag'), 'http://api.lan/v1')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/v1?x=1'), 'http://127.0.0.1:3425/v1')
+  assert.equal(normalizeBaseUrl('http://127.0.0.1:3425/v1#frag'), 'http://127.0.0.1:3425/v1')
   assert.throws(() => normalizeBaseUrl(''), /non-empty/)
   assert.throws(() => normalizeBaseUrl('not a url'), /not a valid URL/)
   assert.throws(() => normalizeBaseUrl('ftp://x'), /http\(s\)/)
@@ -50,10 +50,10 @@ test('normalizePageSettings keeps known fields and drops unknown keys', () => {
 })
 
 test('resolveEffectiveEndpoint prefers the page per field', () => {
-  const patch = { baseUrl: 'http://api.lan', apiKey: 'not-needed' }
+  const patch = { baseUrl: 'http://127.0.0.1:3425', apiKey: 'not-needed' }
   assert.deepEqual(resolveEffectiveEndpoint(patch, {}), patch)
   assert.deepEqual(resolveEffectiveEndpoint(patch, { baseUrl: 'http://other' }), { baseUrl: 'http://other', apiKey: 'not-needed' })
-  assert.deepEqual(resolveEffectiveEndpoint(patch, { apiKey: 'secret' }), { baseUrl: 'http://api.lan', apiKey: 'secret' })
+  assert.deepEqual(resolveEffectiveEndpoint(patch, { apiKey: 'secret' }), { baseUrl: 'http://127.0.0.1:3425', apiKey: 'secret' })
 })
 
 test('defaultSettingsPath lives next to the plugin data dir', () => {
@@ -68,18 +68,18 @@ test('SettingsStore round-trips through a file and notifies listeners', async ()
   const off = store.onChange(() => {
     notifications += 1
   })
-  const saved = await store.save({ baseUrl: 'http://api.lan/', apiKey: 'k', hiddenModels: ['a'] })
-  assert.deepEqual(saved, { baseUrl: 'http://api.lan', apiKey: 'k', hiddenModels: ['a'] })
+  const saved = await store.save({ baseUrl: 'http://127.0.0.1:3425/', apiKey: 'k', hiddenModels: ['a'] })
+  assert.deepEqual(saved, { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k', hiddenModels: ['a'] })
   assert.equal(notifications, 1)
   off()
   // partial save merges
   await store.save({ apiKey: 'k2' })
   assert.equal(store.get().apiKey, 'k2')
-  assert.equal(store.get().baseUrl, 'http://api.lan')
+  assert.equal(store.get().baseUrl, 'http://127.0.0.1:3425')
   // a fresh store loads the persisted file
   const reloaded = new SettingsStore({ path: join(dir, 'settings.json') })
   await reloaded.load()
-  assert.deepEqual(reloaded.get(), { baseUrl: 'http://api.lan', apiKey: 'k2', hiddenModels: ['a'] })
+  assert.deepEqual(reloaded.get(), { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k2', hiddenModels: ['a'] })
   await assert.rejects(store.save({ baseUrl: 'bogus' }), /valid URL/)
 })
 
@@ -110,7 +110,7 @@ const gatewayBody = {
 }
 
 test('catalog hidden set filters the picker but keeps resolveModel working', async () => {
-  const catalog = new ModelCatalog({ fetchImpl: fakeFetch(gatewayBody), baseUrl: 'http://api.lan' })
+  const catalog = new ModelCatalog({ fetchImpl: fakeFetch(gatewayBody), baseUrl: 'http://127.0.0.1:3425' })
   try {
     await catalog.refreshOnce()
     assert.deepEqual(catalog.list(), ['a', 'b'])
@@ -133,7 +133,7 @@ test('catalog hidden set also filters the static fallback while pending', async 
   const fail = (async () => {
     throw new Error('down')
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://api.lan' })
+  const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://127.0.0.1:3425' })
   await catalog.refreshOnce()
   const total = catalog.list().length
   assert.ok(total > 0)

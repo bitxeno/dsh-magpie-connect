@@ -28,13 +28,17 @@ export interface DshMagpieConnectConfig {
    */
   displayName?: string
   /**
-   * Versioned API root, e.g. `http://api.lan/v1`. The version is part of the
-   * value, not something this plugin adds: a gateway that later serves `/v2`
-   * or `/v3` is reached by changing this one string. Trailing slashes are
-   * stripped; the path is kept. Empty = not configured.
+   * Versioned API root, e.g. `http://127.0.0.1:3425/v1`. The version is part of
+   * the value, not something this plugin adds: a gateway that later serves
+   * `/v2` or `/v3` is reached by changing this one string. Trailing slashes are
+   * stripped; the path is kept.
    */
   baseUrl?: string
-  /** Gateway credential. Required: empty means not configured (key or URL missing both gate). */
+  /**
+   * Gateway credential. Required: an empty key leaves the plugin unconfigured
+   * even though `baseUrl` has a default, so the picker stays empty until it is
+   * set (both are required by `isConfigured`).
+   */
   apiKey?: string
   /**
    * Plugin state directory (status snapshot, settings file, catalog cache).
@@ -65,7 +69,7 @@ export interface DshMagpieConnectConfig {
 export const defaults = {
   providerId: 'dsh-magpie-connect',
   displayName: 'magpie',
-  baseUrl: '',
+  baseUrl: 'http://127.0.0.1:3425/v1',
   apiKey: '',
   refreshSeconds: 300,
   maxRetries: 2,

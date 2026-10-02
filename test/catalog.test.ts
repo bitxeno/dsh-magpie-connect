@@ -133,10 +133,10 @@ test('effortsFor builds the picker ladder in canonical order', () => {
 })
 
 test('fetchMagpieModels appends only the resource to the configured API root', async () => {
-  const models = await fetchMagpieModels('http://api.lan/v1/', fakeFetch({ 'http://api.lan/v1/models': gatewayBody }))
+  const models = await fetchMagpieModels('http://127.0.0.1:3425/v1/', fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }))
   assert.equal(models.size, 4)
   assert.equal(models.get('vercel/openai/gpt-4.1')?.image, true)
-  await assert.rejects(fetchMagpieModels('http://api.lan/v1', fakeFetch({ 'http://api.lan/v1/models': { data: [] } })), /empty list/)
+  await assert.rejects(fetchMagpieModels('http://127.0.0.1:3425/v1', fakeFetch({ 'http://127.0.0.1:3425/v1/models': { data: [] } })), /empty list/)
 })
 
 test('a versioned baseUrl is asked for its own version, never /v1 again', async () => {
@@ -147,12 +147,12 @@ test('a versioned baseUrl is asked for its own version, never /v1 again', async 
   }) as typeof fetch
   // The gateway versions its API: whatever version the user configured is the
   // prefix, so a /v3 deployment must not be asked for /v3/v1/models.
-  await fetchMagpieModels('http://api.lan/v3', spy)
-  assert.deepEqual(seen, ['http://api.lan/v3/models'])
+  await fetchMagpieModels('http://127.0.0.1:3425/v3', spy)
+  assert.deepEqual(seen, ['http://127.0.0.1:3425/v3/models'])
 })
 
 test('ModelCatalog exposes the live list with per-model metadata', async () => {
-  const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }), baseUrl: 'http://api.lan/v1' })
+  const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }), baseUrl: 'http://127.0.0.1:3425/v1' })
   try {
     await catalog.refreshOnce()
     assert.deepEqual(catalog.list(), [
@@ -186,7 +186,7 @@ test('ModelCatalog falls back to the static snapshot while the gateway is down',
   const fail = (async () => {
     throw new Error('network down')
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://api.lan' })
+  const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://127.0.0.1:3425' })
   await catalog.refreshOnce()
   assert.deepEqual(catalog.list(), staticMagpieModels.map((entry) => entry.id))
   assert.equal(catalog.decision('vercel/openai/gpt-4.1').allowed, true)
@@ -207,7 +207,7 @@ test('start() fast-retries while the live catalog is empty, then settles', async
     }
     throw new Error('unexpected')
   }) as typeof fetch
-  const catalog = new ModelCatalog({ fetchImpl: flaky, baseUrl: 'http://api.lan/v1', startupRetryMs: 5, refreshSeconds: 3600 })
+  const catalog = new ModelCatalog({ fetchImpl: flaky, baseUrl: 'http://127.0.0.1:3425/v1', startupRetryMs: 5, refreshSeconds: 3600 })
   try {
     await catalog.start()
     assert.equal(catalog.snapshot().total, 4)
@@ -232,7 +232,7 @@ test('unconfigured catalog exposes nothing and never fetches', async () => {
     assert.deepEqual(catalog.decision('codex/gpt-5.6-terra'), { allowed: false, source: 'unconfigured', known: false })
     assert.equal(catalog.thinks('codex/gpt-5.6-terra'), false)
     assert.equal(catalog.reasoningFor('codex/gpt-5.6-terra'), undefined)
-    assert.equal(catalog.lastError, 'magpie gateway baseUrl is not configured — set it on the Magpie settings page')
+    assert.equal(catalog.lastError, 'magpie gateway API URL or key is not configured — set both on the Magpie settings page')
   } finally {
     catalog.stop()
   }
@@ -241,8 +241,8 @@ test('unconfigured catalog exposes nothing and never fetches', async () => {
 test('catalog announces only when the exposed set actually changed', async () => {
   const announced: string[] = []
   const catalog = new ModelCatalog({
-    fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }),
-    baseUrl: 'http://api.lan/v1',
+    fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }),
+    baseUrl: 'http://127.0.0.1:3425/v1',
     refreshSeconds: 3600,
     onInvalidate: () => {
       announced.push('invalidate')
@@ -279,7 +279,7 @@ test('catalog announces when the gateway list itself moves', async () => {
     new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
   const catalog = new ModelCatalog({
     fetchImpl: live,
-    baseUrl: 'http://api.lan/v1',
+    baseUrl: 'http://127.0.0.1:3425/v1',
     refreshSeconds: 3600,
     onInvalidate: () => {
       announced.push(1)
@@ -297,7 +297,7 @@ test('catalog announces when the gateway list itself moves', async () => {
 })
 
 test('clearing the baseUrl empties a previously live catalog', async () => {
-  const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://api.lan/v1/models': gatewayBody }), baseUrl: 'http://api.lan/v1' })
+  const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }), baseUrl: 'http://127.0.0.1:3425/v1' })
   try {
     await catalog.refreshOnce()
     assert.equal(catalog.list().length, 4)

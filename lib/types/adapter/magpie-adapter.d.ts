@@ -20,7 +20,7 @@ export interface PiProviderLike {
 }
 /** Live endpoint read per request so the settings page applies without restart. */
 export interface RuntimeEndpoint {
-    /** Versioned API root, e.g. `http://api.lan/v1` (no trailing slash). */
+    /** Versioned API root, e.g. `http://127.0.0.1:3425/v1` (no trailing slash). */
     baseUrl(): string;
     /** Bearer key sent to the gateway. */
     apiKey(): string;

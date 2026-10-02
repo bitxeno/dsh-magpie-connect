@@ -7,11 +7,10 @@
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
  *
- * `baseUrl` is the versioned API root (`http://api.lan/v1`), never an origin:
- * the gateway may move to `/v2`, and the plugin must not know that version.
+ * `baseUrl` is the versioned API root (default `http://127.0.0.1:3425/v1`),
+ * never an origin: the gateway may move to `/v2`, and the plugin must not know
+ * that version.
  */
-/** Conventional LAN API root (example value, not a default — empty means unconfigured). */
-export declare const MAGPIE_DEFAULT_BASE_URL = "http://api.lan";
 export interface MagpieModelEntry {
     id: string;
     displayName: string;
@@ -177,7 +176,7 @@ export declare class ModelCatalog {
 /**
  * Fetch the live gateway model list.
  *
- * `baseUrl` is the versioned API root (`http://api.lan/v1`) exactly as the user
+ * `baseUrl` is the versioned API root (`http://127.0.0.1:3425/v1`) exactly as the user
  * configured it; only the resource is appended. Never synthesize a version
  * here — a gateway on `/v2` would otherwise be asked for `/v2/v1/models`.
  */

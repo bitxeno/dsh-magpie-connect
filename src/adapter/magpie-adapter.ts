@@ -38,7 +38,7 @@ export interface PiProviderLike {
 
 /** Live endpoint read per request so the settings page applies without restart. */
 export interface RuntimeEndpoint {
-  /** Versioned API root, e.g. `http://api.lan/v1` (no trailing slash). */
+  /** Versioned API root, e.g. `http://127.0.0.1:3425/v1` (no trailing slash). */
   baseUrl(): string
   /** Bearer key sent to the gateway. */
   apiKey(): string
@@ -346,7 +346,7 @@ export class MagpieAdapter {
     const raw = this.#runtime?.baseUrl() ?? this.#fallbackBaseUrl
     const baseUrl = raw.replace(/\/+$/, '')
     if (baseUrl === '') {
-      throw new Error('dsh-magpie-connect: Magpie gateway API URL is not configured — open Settings → Magpie and set it')
+      throw new Error('dsh-magpie-connect: Magpie gateway API URL or key is not configured — open Settings → Magpie and fill in both')
     }
     return baseUrl
   }

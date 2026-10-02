@@ -28,12 +28,13 @@ dsh plugin --profile web add dsh-magpie-connect
 
 ### 第一步：填网关地址和 Key
 
-打开 **设置 → Magpie 网关**，填入两项：
+打开 **设置 → Magpie 网关**，确认两项：
 
-- **API 地址** — 网关地址，**要带版本号**，例如 `http://api.lan/v1`
-- **API Key** — 网关凭据
+- **API 地址** — 网关地址，**要带版本号**。默认已填好 `http://127.0.0.1:3425/v1`，网关不在本机时改成实际地址。
+- **API Key** — 网关凭据，必填。
 
-两项都填好才能使用。点「保存」后，可以点「测试连接」确认通不通（会告诉你网关上有多少模型）。
+点「保存」后，可以点「测试连接」确认通不通（会告诉你网关上有多少模型）。两项都齐了才会生效——
+地址有默认值，Key 没有，所以没填 Key 之前模型选择器是空的。
 
 > **地址一定要带版本段**（如 `/v1`）。插件只在你填的地址后面接资源名，不会自己补
 > 版本号——所以网关以后升级到 `/v2`、`/v3`，你只要改这一个字符串。
@@ -59,7 +60,7 @@ dsh plugin --profile web add dsh-magpie-connect
 **模型选择器是空的？**
 
 先确认地址和 Key 都填了并且已经保存，再点「测试连接」。最常见的原因是地址缺了版本段
-（比如填成 `http://api.lan`，而应该是 `http://api.lan/v1`）。
+（比如填成 `http://127.0.0.1:3425`，而应该是 `http://127.0.0.1:3425/v1`）。
 
 **删掉的模型怎么加回来？**
 
@@ -90,7 +91,7 @@ dsh plugin --profile web add dsh-magpie-connect
   config:
     providerId: dsh-magpie-connect
     displayName: magpie
-    baseUrl: http://api.lan/v1   # 带版本号的完整地址
+    baseUrl: http://127.0.0.1:3425/v1   # 带版本号的完整地址
     apiKey: not-needed           # 局域网网关通常不校验，但必须非空
     refreshSeconds: 300
     maxRetries: 2
@@ -103,8 +104,8 @@ dsh plugin --profile web add dsh-magpie-connect
 | --- | --- | --- |
 | `providerId` | `dsh-magpie-connect` | 注册到 DSH 的 provider 名称。 |
 | `displayName` | `magpie` | 模型选择器里的分组名。 |
-| `baseUrl` | `''`（未配置） | 带版本号的 API 地址，例如 `http://api.lan/v1`。必填。 |
-| `apiKey` | `''`（未配置） | 网关凭据。必填，即使网关不校验。 |
+| `baseUrl` | `http://127.0.0.1:3425/v1` | 带版本号的 API 地址。 |
+| `apiKey` | `''`（未配置） | 网关凭据。必填，即使网关不校验——地址有默认值，Key 没有。 |
 | `dataDir` | `~/.dsh-magpie-connect` | 状态目录（状态快照、设置文件、模型缓存）。 |
 | `refreshSeconds` | `300` | 模型目录刷新间隔（秒）。 |
 | `maxRetries` | `2` | 遇到 429/5xx 时的连接重试次数。 |
@@ -124,7 +125,7 @@ MagpieAdapter（注册为 DSH 的 LlmAdapter）
    │  pi-ai openai-completions 流（默认）/
    │      openai-responses 流（仅支持 responses 的模型）
    ▼
-http://api.lan/v1  ← 按 native_endpoints 选择 chat/completions 或 responses
+http://127.0.0.1:3425/v1  ← 按 native_endpoints 选择 chat/completions 或 responses
 ```
 
 - **模型目录** — 全量接入网关 `GET {baseUrl}/models`，不做付费过滤；磁盘缓存加编译期

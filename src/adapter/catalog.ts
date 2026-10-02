@@ -10,12 +10,10 @@ import { dirname, join } from 'node:path'
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
  *
- * `baseUrl` is the versioned API root (`http://api.lan/v1`), never an origin:
- * the gateway may move to `/v2`, and the plugin must not know that version.
+ * `baseUrl` is the versioned API root (default `http://127.0.0.1:3425/v1`),
+ * never an origin: the gateway may move to `/v2`, and the plugin must not know
+ * that version.
  */
-
-/** Conventional LAN API root (example value, not a default — empty means unconfigured). */
-export const MAGPIE_DEFAULT_BASE_URL = 'http://api.lan'
 
 export interface MagpieModelEntry {
   id: string
@@ -350,7 +348,7 @@ export class ModelCatalog {
 
   async refreshModels(): Promise<void> {
     if (!this.configured) {
-      this.#lastError = 'magpie gateway baseUrl is not configured — set it on the Magpie settings page'
+      this.#lastError = 'magpie gateway API URL or key is not configured — set both on the Magpie settings page'
       return
     }
     try {
@@ -423,7 +421,7 @@ export class ModelCatalog {
     // stale directory, and clearing unconfigured state must empty it.
     this.#entries = new Map()
     this.#updatedAt = 0
-    this.#lastError = root === '' ? 'magpie gateway baseUrl is not configured — set it on the Magpie settings page' : ''
+    this.#lastError = root === '' ? 'magpie gateway API URL or key is not configured — set both on the Magpie settings page' : ''
     // The picker must not keep serving the previous root's directory.
     this.#announce()
   }
@@ -541,7 +539,7 @@ async function withTimeout(
 /**
  * Fetch the live gateway model list.
  *
- * `baseUrl` is the versioned API root (`http://api.lan/v1`) exactly as the user
+ * `baseUrl` is the versioned API root (`http://127.0.0.1:3425/v1`) exactly as the user
  * configured it; only the resource is appended. Never synthesize a version
  * here — a gateway on `/v2` would otherwise be asked for `/v2/v1/models`.
  */
