@@ -37,7 +37,7 @@ test('MagpieAdapter implements the full dsh-llm adapter surface', () => {
 
 test('providerInfo preserves the route id and reports the display name', () => {
   const adapter = testAdapter(new ModelCatalog())
-  assert.deepEqual(adapter.providerInfo('dsh-magpie-connect'), { id: 'dsh-magpie-connect', name: 'magpie' })
+  assert.deepEqual(adapter.providerInfo('dsh-magpie-connect'), { id: 'dsh-magpie-connect', name: 'Magpie' })
   const renamed = testAdapter(new ModelCatalog(), { providerId: 'lan', displayName: 'LAN Models' })
   assert.deepEqual(renamed.providerInfo('lan'), { id: 'lan', name: 'LAN Models' })
 })

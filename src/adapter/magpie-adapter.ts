@@ -47,7 +47,7 @@ export interface RuntimeEndpoint {
 export const PROVIDER_ID = 'dsh-magpie-connect'
 
 /** Default picker label for the default route id. */
-export const DEFAULT_DISPLAY_NAME = 'magpie'
+export const DEFAULT_DISPLAY_NAME = 'Magpie'
 
 export interface MagpieModelInfo {
   id: string

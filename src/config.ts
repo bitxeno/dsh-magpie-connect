@@ -24,7 +24,7 @@ export interface DshMagpieConnectConfig {
   /**
    * Display name shown in the model picker for this provider.
    * Defaults to the explicit `providerId` when one is given,
-   * otherwise to `'magpie'`.
+   * otherwise to `'Magpie'`.
    */
   displayName?: string
   /**
@@ -68,7 +68,7 @@ export interface DshMagpieConnectConfig {
 
 export const defaults = {
   providerId: 'dsh-magpie-connect',
-  displayName: 'magpie',
+  displayName: 'Magpie',
   baseUrl: 'http://127.0.0.1:3425/v1',
   apiKey: '',
   refreshSeconds: 300,

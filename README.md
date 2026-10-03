@@ -90,7 +90,7 @@ dsh plugin --profile web add dsh-magpie-connect
   name: 'dsh-magpie-connect'
   config:
     providerId: dsh-magpie-connect
-    displayName: magpie
+    displayName: Magpie
     baseUrl: http://127.0.0.1:3425/v1   # 带版本号的完整地址
     apiKey: not-needed           # 局域网网关通常不校验，但必须非空
     refreshSeconds: 300
@@ -103,7 +103,7 @@ dsh plugin --profile web add dsh-magpie-connect
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `providerId` | `dsh-magpie-connect` | 注册到 DSH 的 provider 名称。 |
-| `displayName` | `magpie` | 模型选择器里的分组名。 |
+| `displayName` | `Magpie` | 模型选择器里的分组名。 |
 | `baseUrl` | `http://127.0.0.1:3425/v1` | 带版本号的 API 地址。 |
 | `apiKey` | `''`（未配置） | 网关凭据。必填，即使网关不校验——地址有默认值，Key 没有。 |
 | `dataDir` | `~/.dsh-magpie-connect` | 状态目录（状态快照、设置文件、模型缓存）。 |

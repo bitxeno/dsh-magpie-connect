@@ -5,7 +5,7 @@ import { resolveConfig, defaults } from '../src/config.ts'
 test('resolveConfig fills defaults and keeps overrides', () => {
   const base = resolveConfig()
   assert.equal(base.providerId, defaults.providerId)
-  assert.equal(base.displayName, 'magpie')
+  assert.equal(base.displayName, 'Magpie')
   // The address ships with the conventional local gateway so a first run has
   // somewhere to point; the key stays empty, and `isConfigured` still gates on
   // both, so the picker is not usable until the user saves one.
