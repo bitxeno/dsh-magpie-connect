@@ -24,7 +24,7 @@
   },
   "dsh": {
     "engines": {
-      "dsh": ">=0.2.0-rc.1"
+      "dsh": ">=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-alpha.1 <0.3.0-0"
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -42,6 +42,8 @@
     "lib",
     "cordis.patch.yml",
     "dsh.plugin.json",
+    "screenshots.json",
+    "docs/image/screenshot-settings.png",
     "README.md",
     "LICENSE"
   ],
@@ -71,7 +73,7 @@
     "@earendil-works/pi-ai": "^0.82.1"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.2.0-rc.1",
+    "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-alpha.1 <0.3.0-0",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
