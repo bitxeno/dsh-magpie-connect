@@ -128,20 +128,6 @@ export function modelApiForEntry(nativeEndpoints: readonly string[]): 'openai-co
   return requiresResponsesApiEntry(nativeEndpoints) ? 'openai-responses' : 'openai-completions'
 }
 
-/**
- * Lane-specific correction for gateway-advertised windows the execution
- * layer does not honor. The workbuddy-ai lane reports context_window
- * 1000000 but rejects anything over 100000 (observed 2026-10-08: 400
- * "prompt is too long: 100001 tokens > 100000 maximum"). Over-declaring
- * breaks both turns and /compact summaries (the summary request itself
- * overshoots); under-declaring only compacts early, so clamp down.
- */
-function clampLaneWindow(id: string, value: number | undefined): number | undefined {
-  if (value === undefined) return undefined
-  if (id.startsWith('workbuddy-ai/')) return Math.min(value, 100_000)
-  return value
-}
-
 /** Decode one gateway model object into a catalog entry. */
 export function decodeModel(raw: unknown): MagpieModelEntry | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -154,7 +140,7 @@ export function decodeModel(raw: unknown): MagpieModelEntry | undefined {
     (typeof record.display_name === 'string' && record.display_name) ||
     (typeof record.magpie_label === 'string' && record.magpie_label) ||
     id
-  const contextWindow = clampLaneWindow(id, num(record.context_window) ?? num(record.context_length) ?? num(record.max_input_tokens))
+  const contextWindow = num(record.context_window) ?? num(record.context_length) ?? num(record.max_input_tokens)
   const maxTokens = num(record.max_output_tokens)
   const modalities = record.modalities as { input?: unknown } | undefined
   const inputModalities = Array.isArray(modalities?.input) ? modalities.input.map(String).map((s) => s.toLowerCase()) : []
@@ -209,8 +195,8 @@ export const staticMagpieModels: MagpieModelEntry[] = [
   { id: 'copilot/gpt-4.1', displayName: 'gpt-4.1', contextWindow: 1047576, maxTokens: 32768, image: true, nativeEndpoints: ['/v1/chat/completions', '/v1/responses', '/v1/messages'], reasoning: false },
   { id: 'copilot/gpt-6-luna', displayName: 'gpt-6-luna', contextWindow: 922000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/responses'], reasoning: true, efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'copilot/claude-sonnet-5.5', displayName: 'claude-sonnet-5.5', contextWindow: 1000000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/chat/completions', '/v1/messages'], reasoning: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  { id: 'workbuddy-ai/hy4-preview-f', displayName: 'hy4-preview-f', contextWindow: 100000, maxTokens: 64000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['high'] },
-  { id: 'workbuddy-ai/deepseek-v4.1-flash', displayName: 'deepseek-v4.1-flash', contextWindow: 100000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['low', 'high', 'max'] },
+  { id: 'workbuddy-ai/hy4-preview-f', displayName: 'hy4-preview-f', contextWindow: 1000000, maxTokens: 64000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['high'] },
+  { id: 'workbuddy-ai/deepseek-v4.1-flash', displayName: 'deepseek-v4.1-flash', contextWindow: 1000000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['low', 'high', 'max'] },
 ]
 
 export interface CatalogSnapshot {

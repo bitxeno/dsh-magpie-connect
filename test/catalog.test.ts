@@ -97,16 +97,6 @@ test('decodeModel reads gateway fields with fallbacks', () => {
   assert.equal(decodeModel({}), undefined)
 })
 
-test('decodeModel clamps the workbuddy-ai lane to its enforced window', () => {
-  // Gateway advertises 1000000 but the execution layer rejects over 100000.
-  const buddy = decodeModel({ id: 'workbuddy-ai/hy4-preview-f', context_window: 1000000 })
-  assert.equal(buddy?.contextWindow, 100000)
-  const buddySmall = decodeModel({ id: 'workbuddy-ai/gpt-6-sol', context_window: 50000 })
-  assert.equal(buddySmall?.contextWindow, 50000)
-  const other = decodeModel({ id: 'vercel/openai/gpt-4.1', context_window: 1047576 })
-  assert.equal(other?.contextWindow, 1047576)
-})
-
 test('decodeMagpieModels keys entries by id', () => {
   const models = decodeMagpieModels(gatewayBody)
   assert.equal(models.size, 4)
