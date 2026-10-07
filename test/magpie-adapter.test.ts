@@ -30,7 +30,7 @@ function catalogStub(entries: Record<string, { image?: boolean; reasoning?: bool
 
 test('MagpieAdapter implements the full dsh-llm adapter surface', () => {
   const adapter = testAdapter(new ModelCatalog())
-  for (const method of ['providerInfo', 'providerRetryPolicy', 'listModels', 'resolveModel', 'prepareCall', 'stream']) {
+  for (const method of ['providerInfo', 'providerRetryPolicy', 'imageRequestPricing', 'listModels', 'resolveModel', 'prepareCall', 'stream']) {
     assert.equal(typeof (adapter as unknown as Record<string, unknown>)[method], 'function', `missing method: ${method}`)
   }
 })
@@ -45,6 +45,16 @@ test('providerInfo preserves the route id and reports the display name', () => {
 test('providerRetryPolicy defers to the host default', () => {
   const adapter = testAdapter(new ModelCatalog())
   assert.equal(adapter.providerRetryPolicy('dsh-magpie-connect'), undefined)
+})
+
+test('imageRequestPricing declares no per-route visual pricing (compact-safe)', () => {
+  const adapter = testAdapter(new ModelCatalog())
+  assert.equal(adapter.imageRequestPricing('dsh-magpie-connect', 'any-model'), undefined)
+  // Regression: /compact resolves pricing via
+  // `adapters.get(provider)?.adapter.imageRequestPricing(provider, model)` —
+  // a missing method throws "is not a function" and aborts compaction.
+  const adapters = new Map([['dsh-magpie-connect', { adapter }]])
+  assert.equal(adapters.get('dsh-magpie-connect')?.adapter.imageRequestPricing('dsh-magpie-connect', 'any-model'), undefined)
 })
 
 test('listModels mirrors the catalog with image modalities and no duplicates', () => {

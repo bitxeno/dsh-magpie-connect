@@ -6,8 +6,9 @@ import { type AttachmentStore, type HarnessGenerateOptions } from './messages.ts
  * directly from the configured API root (e.g. `…/v1`) — chat completions for most models plus the
  * Responses API for responses-only models (Muse Spark / Codex / Grok lanes).
  *
- * Adapter contract: dsh-llm LlmAdapter (providerInfo/listModels/resolveModel/
- * prepareCall/stream) — structural, no host import.
+ * Adapter contract: dsh-llm LlmAdapter (providerInfo/providerRetryPolicy/
+ * imageRequestPricing/listModels/resolveModel/prepareCall/stream) —
+ * structural, no host import.
  *
  * Images resolve through the harness attachment service; thinking levels come
  * from the gateway catalog and forward verbatim (including the `none`/`ultra`
@@ -119,6 +120,13 @@ export declare class MagpieAdapter {
      * undefined = the host default retry policy.
      */
     providerRetryPolicy(_provider: string): undefined;
+    /**
+     * Per-route visual-token pricing for the token meter (`/compact` calls
+     * this unconditionally via `ctx.llm.imageRequestPricing`). The gateway
+     * charges no separate visual tokens (pi-ai cost is 0), so like the host
+     * base-class default we declare no per-route pricing.
+     */
+    imageRequestPricing(_provider: string, _model: string): undefined;
     /** Advisory catalog for the DSH model picker (deduped; dsh-llm rejects duplicates). */
     listModels(provider: string): Array<{
         provider: string;
