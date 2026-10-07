@@ -1,7 +1,7 @@
 {
   "name": "dsh-magpie-connect",
   "description": "Magpie LAN gateway models for the DeepSeek Harness web GUI",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "entry": {
     "name": "dsh-magpie-connect",
     "inject": [
