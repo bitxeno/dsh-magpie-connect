@@ -28,6 +28,13 @@ export interface ModelListEditorProps {
      * message; the editor owns showing it.
      */
     onFetch: () => Promise<readonly CandidateRow[]>;
+    /**
+     * Re-read the gateway's directory into the list. The dialog asks the endpoint
+     * the form shows — which may be newer than the one the list was read from —
+     * so after a successful fetch the list is re-read and a model the user ticks
+     * has a row to appear in.
+     */
+    onRefresh: () => Promise<void>;
     /** Hide one model (the list's delete action). */
     onRemove: (id: string) => void;
     /** Replace the whole hidden set (the dialog's adopt action). */

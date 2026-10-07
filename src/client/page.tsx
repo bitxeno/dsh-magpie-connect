@@ -142,6 +142,19 @@ export function MagpieSettings(): unknown {
   }
 
   /**
+   * Re-read the gateway's directory into the list.
+   *
+   * Discovery asks the endpoint the form shows, which can be newer than the one
+   * the list was read from (an unsaved URL, or a key typed after the page
+   * loaded). The list must hold the same directory the dialog is offering,
+   * otherwise a model the user just ticked has no row to appear in.
+   */
+  const refreshModels = async (): Promise<void> => {
+    const value = (await request('/api/magpie-models')) as { models: ModelRow[] }
+    setModels(value.models ?? [])
+  }
+
+  /**
    * Commit a visibility change and queue it. Only `hiddenModels` is sent: the
    * credential fields are the Save button's business, and an autosave must not
    * quietly re-commit a URL or key the user is still editing.
@@ -169,10 +182,9 @@ export function MagpieSettings(): unknown {
       // The response carries the pruned set; adopt it without queueing a write
       // of its own, which would be a pointless echo of what just landed.
       setHidden(saved.hiddenModels ?? [])
-      // A save can move the origin or the visible set: re-read the rows so the
-      // list matches the picker the save just pushed out.
-      const modelsValue = (await request('/api/magpie-models')) as { models: ModelRow[] }
-      setModels(modelsValue.models ?? [])
+      // A save can move the origin, the key, or the visible set: re-read the
+      // rows so the list matches the picker the save just pushed out.
+      await refreshModels()
       setNotice(text('saved'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -235,6 +247,7 @@ export function MagpieSettings(): unknown {
         models={models}
         visibleIds={visibleIds}
         onFetch={fetchCandidates}
+        onRefresh={refreshModels}
         onRemove={(id) => applyHidden(hideOne(hidden, id))}
         onHiddenChange={applyHidden}
         disabled={!loaded || working}

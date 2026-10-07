@@ -67,6 +67,15 @@ export const TEST_API = '/api/magpie-test'
  */
 export const DISCOVER_API = '/api/magpie-discover'
 
+/**
+ * How long a settings save waits for the catalog re-read it triggered.
+ *
+ * The page re-reads rows right after the response, so the save must not answer
+ * before a fast gateway has been read; but the credential write is already
+ * durable, so a slow gateway must not hold the request open either.
+ */
+const SAVE_REFRESH_WAIT_MS = 5000
+
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
   store: SettingsStore
@@ -206,6 +215,20 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     }
     const saved = await backend.store.save(normalized)
     backend.applyPageSettings()
+    // A save can move the endpoint (or just the key), so re-read the directory
+    // before answering: the page re-reads rows right after this response, and a
+    // key-guarded gateway would otherwise still be serving the old, empty
+    // snapshot when that read lands.
+    //
+    // Bounded: the write is already durable, so a gateway that answers slowly
+    // (or not at all) must not turn a successful save into a client-side
+    // timeout. Losing the race only costs a stale row, never the setting.
+    if (normalized.baseUrl !== undefined || normalized.apiKey !== undefined) {
+      await Promise.race([
+        backend.catalog.refreshOnce(),
+        new Promise((resolve) => setTimeout(resolve, SAVE_REFRESH_WAIT_MS)),
+      ])
+    }
     const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, saved)
     return routeOk({ baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, hiddenModels: saved.hiddenModels ?? [] })
   } catch (error) {
@@ -438,6 +461,7 @@ export function apply(
   }
   const catalog = new ModelCatalog({
     baseUrl: effective().baseUrl,
+    apiKey: effective().apiKey,
     refreshSeconds: cfg.refreshSeconds,
     cachePath: defaultCachePath(dataDir),
     onRefresh: (status, lastError) => {
@@ -446,22 +470,23 @@ export function apply(
     },
     onInvalidate: announceTopology,
   })
-  /** Apply page settings to the live catalog + adapter (no restart needed). */
+  /**
+   * Apply page settings to the live catalog + adapter (no restart needed).
+   *
+   * The endpoint is a pair: the gateway guards `GET /models` with the same key
+   * as inference, so the key is part of the catalog's identity, not just the
+   * URL. A key-only edit therefore re-points the catalog too — otherwise the
+   * refresh keeps 401ing and the picker keeps serving the static snapshot,
+   * which is why a model just ticked in the fetch dialog never appeared.
+   */
   const applyPageSettings = (): void => {
     const page = store.get()
     const endpoint = resolveEffectiveEndpoint(patchEndpoint, page)
     // The gate: URL and key are both required. Anything missing clears the
     // catalog API root, which empties the picker and calls fail fast.
     // The value is the versioned root (`…/v1`), passed through untouched.
-    const catalogBaseUrl = isConfigured(endpoint) ? endpoint.baseUrl.replace(/\/+$/, '') : ''
-    if (catalog.baseUrl !== catalogBaseUrl) {
-      catalog.setBaseUrl(catalogBaseUrl)
-      if (catalogBaseUrl !== '') {
-        void catalog.refreshOnce().catch((err) => {
-          logger.warn(`dsh-magpie-connect: catalog refresh after endpoint change failed: ${err instanceof Error ? err.message : String(err)}`)
-        })
-      }
-    }
+    const configured = isConfigured(endpoint)
+    catalog.setEndpoint(configured ? endpoint.baseUrl.replace(/\/+$/, '') : '', configured ? endpoint.apiKey : '')
     catalog.setHidden(page.hiddenModels ?? [])
   }
   const adapter = new MagpieAdapter(catalog, {

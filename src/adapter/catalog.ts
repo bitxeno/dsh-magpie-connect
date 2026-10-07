@@ -10,6 +10,10 @@ import { dirname, join } from 'node:path'
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
  *
+ * The gateway guards that endpoint with the same Bearer key as inference, so
+ * every fetch here carries it: a keyless refresh is answered 401 and the
+ * picker silently keeps the static snapshot instead of the live directory.
+ *
  * `baseUrl` is the versioned API root (default `http://127.0.0.1:3425/v1`),
  * never an origin: the gateway may move to `/v2`, and the plugin must not know
  * that version.
@@ -209,6 +213,13 @@ export interface CatalogOptions {
   cachePath?: string
   /** Versioned API root override for tests. */
   baseUrl?: string
+  /**
+   * Gateway credential, sent as `Authorization: Bearer …` on every catalog
+   * fetch. The gateway guards `GET /models` with the same key it guards
+   * inference with, so a refresh that omits it is answered 401 and the picker
+   * silently stays on the static snapshot.
+   */
+  apiKey?: string
   fetchImpl?: typeof fetch
   now?: () => number
   /** Observability hook: fired after every refresh round. */
@@ -235,6 +246,7 @@ export class ModelCatalog {
   #refreshSeconds: number
   #cachePath?: string
   #baseUrl: string
+  #apiKey: string
   #fetch: typeof fetch
   #now: () => number
   #timer: NodeJS.Timeout | null = null
@@ -253,6 +265,7 @@ export class ModelCatalog {
     this.#refreshSeconds = options.refreshSeconds ?? 300
     this.#cachePath = options.cachePath
     this.#baseUrl = (options.baseUrl ?? '').replace(/\/+$/, '')
+    this.#apiKey = options.apiKey ?? ''
     this.#fetch = options.fetchImpl ?? fetch
     this.#now = options.now ?? Date.now
     this.#onRefresh = options.onRefresh
@@ -346,13 +359,23 @@ export class ModelCatalog {
     return this.#baseUrl !== ''
   }
 
+  /**
+   * Auth header for every catalog fetch. The gateway guards `GET /models` with
+   * the same Bearer key as inference, so omitting it is answered 401 — which
+   * the refresh loop then reports as a "catalog issue" while the picker keeps
+   * serving whatever it already had.
+   */
+  #authHeaders(): Record<string, string> {
+    return this.#apiKey === '' ? {} : { authorization: `Bearer ${this.#apiKey}` }
+  }
+
   async refreshModels(): Promise<void> {
     if (!this.configured) {
       this.#lastError = 'magpie gateway API URL or key is not configured — set both on the Magpie settings page'
       return
     }
     try {
-      const entries = await fetchMagpieModels(this.#baseUrl, this.#fetch)
+      const entries = await fetchMagpieModels(this.#baseUrl, this.#fetch, { headers: this.#authHeaders() })
       this.#entries = entries
       this.#updatedAt = this.#now()
       this.#lastError = ''
@@ -412,22 +435,47 @@ export class ModelCatalog {
     return this.#hidden.has(model)
   }
 
-  /** Point the refresh loop at another API root (settings page change). */
-  setBaseUrl(baseUrl: string): void {
+  /**
+   * Point the refresh loop at another API root or credential (settings page
+   * change).
+   *
+   * The key is part of the identity here, not just the URL: the gateway's
+   * `GET /models` is key-guarded, so a key-only edit — the common case of
+   * pasting a fresh key — must re-read the directory too. When only the key
+   * moves the live entries are kept and merely re-fetched; when the root
+   * moves they are dropped, because they describe a different gateway.
+   * @param baseUrl - the versioned API root ('' = unconfigured).
+   * @param apiKey - the gateway credential sent as a Bearer header.
+   */
+  setEndpoint(baseUrl: string, apiKey: string): void {
     const root = baseUrl.replace(/\/+$/, '')
-    if (root === this.#baseUrl) return
+    const key = apiKey
+    if (root === this.#baseUrl && key === this.#apiKey) return
+    const rootChanged = root !== this.#baseUrl
     this.#baseUrl = root
-    // Drop entries from the previous root: the picker must not serve a
-    // stale directory, and clearing unconfigured state must empty it.
-    this.#entries = new Map()
-    this.#updatedAt = 0
+    this.#apiKey = key
+    if (rootChanged) {
+      // Drop entries from the previous root: the picker must not serve a
+      // stale directory, and clearing unconfigured state must empty it.
+      this.#entries = new Map()
+      this.#updatedAt = 0
+    }
     this.#lastError = root === '' ? 'magpie gateway API URL or key is not configured — set both on the Magpie settings page' : ''
-    // The picker must not keep serving the previous root's directory.
+    // The picker must not keep serving the previous endpoint's directory.
     this.#announce()
+  }
+
+  /** Point the refresh loop at another API root (keeps the current key). */
+  setBaseUrl(baseUrl: string): void {
+    this.setEndpoint(baseUrl, this.#apiKey)
   }
 
   get baseUrl(): string {
     return this.#baseUrl
+  }
+
+  get apiKey(): string {
+    return this.#apiKey
   }
 
   decision(model: string): { allowed: boolean; source: string; known: boolean } {

@@ -39,6 +39,13 @@ export interface ModelListEditorProps {
    * message; the editor owns showing it.
    */
   onFetch: () => Promise<readonly CandidateRow[]>
+  /**
+   * Re-read the gateway's directory into the list. The dialog asks the endpoint
+   * the form shows — which may be newer than the one the list was read from —
+   * so after a successful fetch the list is re-read and a model the user ticks
+   * has a row to appear in.
+   */
+  onRefresh: () => Promise<void>
   /** Hide one model (the list's delete action). */
   onRemove: (id: string) => void
   /** Replace the whole hidden set (the dialog's adopt action). */
@@ -113,7 +120,7 @@ function chipsFor(row: CandidateRow): Array<{ key: string; label: string }> {
  * @returns the model-list editor.
  */
 export function ModelListEditor(props: ModelListEditorProps): unknown {
-  const { models, visibleIds, onFetch, onRemove, onHiddenChange, disabled, fetchable, status } = props
+  const { models, visibleIds, onFetch, onRefresh, onRemove, onHiddenChange, disabled, fetchable, status } = props
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   /** Fetch/discovery failure — distinct from the autosave failure in `props.failure`. */
@@ -163,6 +170,11 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
         setFetchFailure(text('fetchEmpty'))
         return
       }
+      // The dialog asked the endpoint the form shows, so the list may be
+      // holding an older directory. Re-read it before the user adopts: a model
+      // they tick here needs a row to land in, and a hidden id is pruned
+      // against the live directory on save.
+      await onRefresh().catch(() => {})
       setCandidateQuery('')
       setCandidates(found)
       setPicked(initialPicked(found, visibleIds))

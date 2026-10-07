@@ -151,6 +151,62 @@ test('a versioned baseUrl is asked for its own version, never /v1 again', async 
   assert.deepEqual(seen, ['http://127.0.0.1:3425/v3/models'])
 })
 
+test('catalog refreshes carry the gateway key (GET /models is key-guarded)', async () => {
+  const auth: string[] = []
+  const spy = (async (_url: string | URL, init?: RequestInit) => {
+    auth.push(String((init?.headers as Record<string, string> | undefined)?.authorization ?? ''))
+    return new Response(JSON.stringify(gatewayBody), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  const catalog = new ModelCatalog({ fetchImpl: spy, baseUrl: 'http://127.0.0.1:3425/v1', apiKey: 'test-key' })
+  try {
+    await catalog.refreshOnce()
+    // The gateway guards the directory with the same key as inference: a
+    // keyless refresh is answered 401, and the picker silently keeps the
+    // static snapshot instead of the live list.
+    assert.deepEqual(auth, ['Bearer test-key'])
+    assert.equal(catalog.list().length, 4)
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('a key-only change re-points the catalog and re-fetches with the new key', async () => {
+  const auth: string[] = []
+  const spy = (async (_url: string | URL, init?: RequestInit) => {
+    auth.push(String((init?.headers as Record<string, string> | undefined)?.authorization ?? ''))
+    return new Response(JSON.stringify(gatewayBody), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  const catalog = new ModelCatalog({ fetchImpl: spy, baseUrl: 'http://127.0.0.1:3425/v1', apiKey: 'test-key' })
+  try {
+    await catalog.refreshOnce()
+    catalog.setEndpoint('http://127.0.0.1:3425/v1', 'rotated-key')
+    await catalog.refreshOnce()
+    assert.deepEqual(auth, ['Bearer test-key', 'Bearer rotated-key'])
+    // Same gateway, new credential: the live directory stays.
+    assert.equal(catalog.list().length, 4)
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('setEndpoint is a no-op when neither the root nor the key moved', async () => {
+  const announced: string[] = []
+  const catalog = new ModelCatalog({
+    fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }),
+    baseUrl: 'http://127.0.0.1:3425/v1',
+    apiKey: 'test-key',
+    onInvalidate: () => announced.push('invalidate'),
+  })
+  try {
+    await catalog.refreshOnce()
+    assert.equal(announced.length, 1, 'the first fill announces')
+    catalog.setEndpoint('http://127.0.0.1:3425/v1/', 'rotated-key')
+    assert.equal(announced.length, 1, 'a redundant re-point does not announce')
+  } finally {
+    catalog.stop()
+  }
+})
+
 test('ModelCatalog exposes the live list with per-model metadata', async () => {
   const catalog = new ModelCatalog({ fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': gatewayBody }), baseUrl: 'http://127.0.0.1:3425/v1' })
   try {

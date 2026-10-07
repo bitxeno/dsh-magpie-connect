@@ -7,6 +7,10 @@
  * is exposed. A disk cache plus a compile-time static snapshot covers gateway
  * outages (the plugin still registers, the picker still lists).
  *
+ * The gateway guards that endpoint with the same Bearer key as inference, so
+ * every fetch here carries it: a keyless refresh is answered 401 and the
+ * picker silently keeps the static snapshot instead of the live directory.
+ *
  * `baseUrl` is the versioned API root (default `http://127.0.0.1:3425/v1`),
  * never an origin: the gateway may move to `/v2`, and the plugin must not know
  * that version.
@@ -89,6 +93,13 @@ export interface CatalogOptions {
     cachePath?: string;
     /** Versioned API root override for tests. */
     baseUrl?: string;
+    /**
+     * Gateway credential, sent as `Authorization: Bearer …` on every catalog
+     * fetch. The gateway guards `GET /models` with the same key it guards
+     * inference with, so a refresh that omits it is answered 401 and the picker
+     * silently stays on the static snapshot.
+     */
+    apiKey?: string;
     fetchImpl?: typeof fetch;
     now?: () => number;
     /** Observability hook: fired after every refresh round. */
@@ -140,9 +151,23 @@ export declare class ModelCatalog {
      */
     pruneHidden(ids: readonly string[]): string[];
     isHidden(model: string): boolean;
-    /** Point the refresh loop at another API root (settings page change). */
+    /**
+     * Point the refresh loop at another API root or credential (settings page
+     * change).
+     *
+     * The key is part of the identity here, not just the URL: the gateway's
+     * `GET /models` is key-guarded, so a key-only edit — the common case of
+     * pasting a fresh key — must re-read the directory too. When only the key
+     * moves the live entries are kept and merely re-fetched; when the root
+     * moves they are dropped, because they describe a different gateway.
+     * @param baseUrl - the versioned API root ('' = unconfigured).
+     * @param apiKey - the gateway credential sent as a Bearer header.
+     */
+    setEndpoint(baseUrl: string, apiKey: string): void;
+    /** Point the refresh loop at another API root (keeps the current key). */
     setBaseUrl(baseUrl: string): void;
     get baseUrl(): string;
+    get apiKey(): string;
     decision(model: string): {
         allowed: boolean;
         source: string;

@@ -92,6 +92,27 @@ async function withServer(body: unknown): Promise<{ server: Server; origin: stri
   return { server, origin: `http://127.0.0.1:${port}` }
 }
 
+/**
+ * A gateway that guards `GET /models` with a Bearer key, exactly like the real
+ * Magpie gateway (which answers 401 to a keyless request). The catalog refresh
+ * and the fetch dialog must both authenticate.
+ */
+async function withKeyedServer(body: unknown, key: string): Promise<{ server: Server; origin: string }> {
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== `Bearer ${key}`) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'no API key was sent' } }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  const port = typeof address === 'object' && address !== null ? address.port : 0
+  return { server, origin: `http://127.0.0.1:${port}` }
+}
+
 async function callRoute(routes: Route[], path: string, method: string, body?: unknown): Promise<{ status: number; payload: unknown }> {
   const route = routes.find((entry) => entry.path === path && entry.methods.includes(method))
   assert.ok(route, `route ${method} ${path} registered`)
@@ -409,4 +430,97 @@ test('every endpoint registers exactly one route per path (POST is never lost)',
   const settings = ctx.routes.find((route) => route.path === SETTINGS_API)
   assert.ok(settings, 'settings route registered')
   assert.deepEqual([...settings.methods].sort(), ['GET', 'POST'])
+})
+
+test('a key-guarded gateway fills the picker on the very first catalog refresh', async (t) => {
+  // Regression: the refresh used to be sent without the key, so a gateway that
+  // guards GET /models answered 401 and the list stayed on the compile-time
+  // static snapshot — the AMD models the gateway serves were never listed.
+  const { server, origin } = await withKeyedServer(gatewayBody, 'test-key')
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const models = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const value = (models.payload as { value: { models: Array<{ id: string }>; snapshot: { status: string; lastRefresh?: string } } }).value
+  assert.deepEqual(value.models.map((row) => row.id), ['a', 'b'])
+  assert.equal(value.snapshot.status, 'ready')
+  assert.ok(value.snapshot.lastRefresh, 'the live directory was actually read')
+})
+
+test('adopting a model the dialog just fetched makes it appear in the list', async (t) => {
+  // End-to-end shape of the reported bug: the dialog asks the endpoint the form
+  // shows (which authenticates), the user ticks a model, and the list — which
+  // had been serving the static snapshot — must show the ticked row.
+  const gateway = { data: [...gatewayBody.data, { id: 'amd/GLM-5.3-Flash', display_name: 'GLM', native_endpoints: ['/v1/chat/completions'], reasoning: false }] }
+  const { server, origin } = await withKeyedServer(gateway, 'test-key')
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  assert.equal((found.payload as { ok: boolean }).ok, true)
+  const candidates = (found.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id)
+  assert.ok(candidates.includes('amd/GLM-5.3-Flash'), 'the dialog lists the AMD model')
+
+  // Tick everything and adopt: the hidden set is empty, so every candidate is on.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: [] })
+
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const rows = (listed.payload as { value: { models: Array<{ id: string; hidden: boolean }> } }).value.models
+  const amd = rows.find((row) => row.id === 'amd/GLM-5.3-Flash')
+  assert.ok(amd, 'the adopted AMD model has a row in the list')
+  assert.equal(amd?.hidden, false)
+})
+
+test('a key-only save re-reads the directory before the page reloads its rows', async (t) => {
+  const { server, origin } = await withKeyedServer(gatewayBody, 'rotated')
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  // Starts on the wrong key: the refresh 401s, so the picker serves the
+  // compile-time static snapshot rather than this gateway's live directory.
+  apply(ctx, { baseUrl: origin, apiKey: 'stale', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+  const before = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const staleIds = (before.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id)
+  assert.ok(staleIds.length > 0, 'the static snapshot covers the unreachable gateway')
+  assert.ok(!staleIds.includes('a'), 'the live directory was never read')
+
+  // Saving the right key must refresh the catalog before answering, because
+  // the page re-reads the rows immediately after this response.
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { apiKey: 'rotated' })
+  assert.equal((saved.payload as { ok: boolean }).ok, true)
+  const after = await callRoute(ctx.routes, MODELS_API, 'GET')
+  assert.deepEqual(
+    (after.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id),
+    ['a', 'b'],
+  )
+})
+
+test('an unreachable gateway still lets a save answer (the refresh wait is bounded)', async (t) => {
+  // The credential write is durable before the refresh is attempted, so a
+  // gateway that never answers must not turn a successful save into a timeout.
+  const blackhole = createServer(() => {
+    // Accept the request and never answer: the catalog fetch hangs here.
+  })
+  await new Promise<void>((resolve) => blackhole.listen(0, '127.0.0.1', resolve))
+  t.after(() => blackhole.close())
+  const address = blackhole.address()
+  const hanging = `http://127.0.0.1:${typeof address === 'object' && address !== null ? address.port : 0}`
+
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: 'http://127.0.0.1:1', apiKey: 'stale', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const started = Date.now()
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: hanging, apiKey: 'test-key' })
+  assert.equal((saved.payload as { ok: boolean }).ok, true)
+  assert.equal((saved.payload as { value: { apiKey: string } }).value.apiKey, 'test-key')
+  assert.ok(Date.now() - started < 30_000, 'the save answered without waiting out the gateway')
 })
