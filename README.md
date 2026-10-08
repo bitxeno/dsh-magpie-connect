@@ -1,6 +1,6 @@
 # dsh-magpie-connect
 
-把 Magpie 局域网网关上的模型接进 DeepSeek Harness（DSH）的模型选择器。
+把 Magpie 网关上的模型接进 DeepSeek Harness（DSH）的模型选择器。
 
 装好之后，你就能在 DSH 里直接选用网关提供的模型，不需要额外跑进程，也不用配代理。
 
@@ -24,7 +24,7 @@ dsh plugin --profile web add dsh-magpie-connect
 
 已有安装用同一条命令即可更新到最新版本。
 
-**需要**：DSH 的 web profile、Node.js ≥ 20、能访问网关所在局域网。
+**需要**：DSH 的 web profile、Node.js ≥ 20、能访问网关。
 
 ## 使用
 
@@ -94,7 +94,7 @@ dsh plugin --profile web add dsh-magpie-connect
     providerId: dsh-magpie-connect
     displayName: Magpie
     baseUrl: http://127.0.0.1:3425/v1   # 带版本号的完整地址
-    apiKey: not-needed           # 局域网网关通常不校验，但必须非空
+    apiKey: not-needed           # 网关通常不校验，但必须非空
     refreshSeconds: 300
     maxRetries: 2
     timeoutMs: 300000

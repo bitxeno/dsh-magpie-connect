@@ -2,7 +2,7 @@ import { readFile, rename, rm, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 /**
- * Model directory for the Magpie LAN gateway.
+ * Model directory for the Magpie gateway.
  *
  * Single source: `GET {baseUrl}/models` already curates the servable set
  * with full per-model metadata (modalities, native endpoints, reasoning

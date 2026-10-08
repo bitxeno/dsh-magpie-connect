@@ -2,7 +2,7 @@ import { ModelCatalog } from './catalog.ts';
 import { type HarnessChunk, type PiEvent } from './events.ts';
 import { type AttachmentStore, type HarnessGenerateOptions } from './messages.ts';
 /**
- * Magpie LAN gateway adapter: registers as a DSH LlmAdapter and streams
+ * Magpie gateway adapter: registers as a DSH LlmAdapter and streams
  * directly from the configured API root (e.g. `…/v1`) — chat completions for most models plus the
  * Responses API for responses-only models (Muse Spark / Codex / Grok lanes).
  *
@@ -93,7 +93,7 @@ export declare class MagpieAdapter {
         providerId?: string;
         /** Display name reported via providerInfo (model picker grouping label). */
         displayName?: string;
-        /** Gateway credential (LAN needs none). */
+        /** Gateway credential (the gateway needs none). */
         apiKey?: string;
         /**
          * Live endpoint read per request (settings page). Falls back to the

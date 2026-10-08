@@ -1,5 +1,5 @@
 /**
- * Model directory for the Magpie LAN gateway.
+ * Model directory for the Magpie gateway.
  *
  * Single source: `GET {baseUrl}/models` already curates the servable set
  * with full per-model metadata (modalities, native endpoints, reasoning

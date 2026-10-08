@@ -18,7 +18,7 @@ import {
 import { withStallTimeout } from './watchdog.ts'
 
 /**
- * Magpie LAN gateway adapter: registers as a DSH LlmAdapter and streams
+ * Magpie gateway adapter: registers as a DSH LlmAdapter and streams
  * directly from the configured API root (e.g. `…/v1`) — chat completions for most models plus the
  * Responses API for responses-only models (Muse Spark / Codex / Grok lanes).
  *
@@ -73,7 +73,7 @@ export interface CatalogLike {
 const DEFAULT_CONTEXT_WINDOW = 262144
 const DEFAULT_MAX_TOKENS = 32768
 
-/** Credential sent to the LAN gateway (it needs none; pi-ai requires a value). */
+/** Credential sent to the Magpie gateway (it needs none; pi-ai requires a value). */
 const DEFAULT_API_KEY = 'not-needed'
 
 /** Connection-setup retries (429/5xx with backoff, interruptible by abort). */
@@ -208,7 +208,7 @@ export class MagpieAdapter {
       providerId?: string
       /** Display name reported via providerInfo (model picker grouping label). */
       displayName?: string
-      /** Gateway credential (LAN needs none). */
+      /** Gateway credential (the gateway needs none). */
       apiKey?: string
       /**
        * Live endpoint read per request (settings page). Falls back to the
@@ -252,7 +252,7 @@ export class MagpieAdapter {
       baseUrl: this.#fallbackBaseUrl,
       auth: {
         apiKey: {
-          name: 'Magpie LAN gateway',
+          name: 'Magpie gateway',
           resolve: async () => ({ auth: { apiKey: this.#runtime?.apiKey() ?? this.#fallbackApiKey } }),
         },
       },

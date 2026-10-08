@@ -23,7 +23,7 @@ import {
 /**
  * dsh-magpie-connect DSH cordis plugin entry.
  *
- * Registers a DSH LlmAdapter streaming directly from the Magpie LAN gateway
+ * Registers a DSH LlmAdapter streaming directly from the Magpie gateway
  * (marketplace shape: no child process, no binary, no proxy). The model
  * catalog warms up in the background (live gateway list with disk cache +
  * static snapshot fallback).

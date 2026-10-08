@@ -2,9 +2,9 @@
  * Plugin configuration (cordis config object, injected via cordis.patch.yml).
  *
  * The adapter registers a DSH LlmAdapter streaming directly from the Magpie
- * LAN gateway (the configured API root): chat completions for most models plus the
+ * Magpie gateway (the configured API root): chat completions for most models plus the
  * Responses API for responses-only models. No child process, no proxy/pool.
- * The LAN gateway needs no credential — `apiKey` defaults to a sentinel that
+ * The gateway needs no credential — `apiKey` defaults to a sentinel that
  * satisfies the pi-ai client without changing the wire.
  *
  * The settings sidebar page can override `baseUrl`/`apiKey` at runtime (saved

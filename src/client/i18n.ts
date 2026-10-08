@@ -7,7 +7,7 @@ type Dict = Record<string, string>
 export const EN: Dict = {
   nav: 'Magpie',
   title: 'Magpie gateway',
-  intro: 'Connect DSH to the Magpie LAN model gateway. Changes save to this machine and apply immediately — no restart needed.',
+  intro: 'Connect DSH to the Magpie model gateway. Changes save to this machine and apply immediately — no restart needed.',
   connection: 'Connection',
   baseUrl: 'API URL',
   baseUrlPlaceholder: 'http://127.0.0.1:3425/v1',
@@ -57,7 +57,7 @@ export const EN: Dict = {
 export const ZH: Dict = {
   nav: 'Magpie 网关',
   title: 'Magpie 网关',
-  intro: '把 DSH 接入 Magpie 局域网模型网关。修改保存在本机并立即生效，无需重启。',
+  intro: '把 DSH 接入 Magpie 模型网关。修改保存在本机并立即生效，无需重启。',
   connection: '连接',
   baseUrl: 'API 地址',
   baseUrlPlaceholder: 'http://127.0.0.1:3425/v1',
