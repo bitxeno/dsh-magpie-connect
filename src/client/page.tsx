@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
-import { hideOne } from './model-visibility.ts'
 import { createWriteQueue } from './write-queue.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
@@ -68,20 +67,23 @@ async function request(path: string, method = 'GET', body?: unknown): Promise<un
 }
 
 /**
- * Persist one visibility change. Sends only `hiddenModels`, so an autosave can
+ * Persist one allowlist change. Sends only `enabledModels`, so an autosave can
  * never re-commit credentials the user is still editing.
- * @param hidden - the hidden set to store.
+ * @param enabled - the allowlist to store (`undefined` = inherit the directory).
  * @returns when the host has accepted it.
  */
-async function saveHiddenModels(hidden: string[]): Promise<void> {
-  await request('/api/magpie-settings', 'POST', { hiddenModels: hidden })
+async function saveEnabledModels(enabled: string[] | undefined): Promise<void> {
+  // JSON has no `undefined`, so inheritance is expressed by omitting the key —
+  // which is how the route reads "no opinion" for a partial payload.
+  await request('/api/magpie-settings', 'POST', enabled === undefined ? {} : { enabledModels: enabled })
 }
 
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [hidden, setHidden] = useState<string[]>([])
+  /** `undefined` = inherit the gateway directory; an array = exactly those ids. */
+  const [enabled, setEnabled] = useState<string[] | undefined>(undefined)
   const [models, setModels] = useState<ModelRow[]>([])
   const [busy, setBusy] = useState<'idle' | 'saving' | 'testing'>('idle')
   const [error, setError] = useState<string | undefined>(undefined)
@@ -98,7 +100,7 @@ export function MagpieSettings(): unknown {
    * leave the disk holding an older set than the screen.
    */
   const modelsQueue = useRef(
-    createWriteQueue<string[]>((next) => saveHiddenModels(next), (outcome) => {
+    createWriteQueue<string[] | undefined>((next) => saveEnabledModels(next), (outcome) => {
       if (outcome.ok) {
         setModelsStatus('saved')
         setModelsError(undefined)
@@ -114,11 +116,11 @@ export function MagpieSettings(): unknown {
     Promise.all([request('/api/magpie-settings'), request('/api/magpie-models')]).then(
       ([settingsValue, modelsValue]) => {
         if (!alive) return
-        const settings = settingsValue as { baseUrl: string; apiKey: string; hiddenModels: string[] }
+        const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
         const listed = (modelsValue as { models: ModelRow[] }).models ?? []
         setBaseUrl(settings.baseUrl ?? '')
         setApiKey(settings.apiKey ?? '')
-        setHidden(settings.hiddenModels ?? [])
+        setEnabled(settings.enabledModels)
         setModels(listed)
         setLoaded(true)
       },
@@ -132,9 +134,6 @@ export function MagpieSettings(): unknown {
       alive = false
     }
   }, [])
-
-  const hiddenSet = useMemo(() => new Set(hidden), [hidden])
-  const visibleIds = useMemo(() => new Set(models.filter((row) => !hiddenSet.has(row.id)).map((row) => row.id)), [models, hiddenSet])
 
   const fetchCandidates = async (): Promise<readonly CandidateRow[]> => {
     const result = (await request('/api/magpie-discover', 'POST', { baseUrl, apiKey })) as { models: CandidateRow[] }
@@ -155,12 +154,12 @@ export function MagpieSettings(): unknown {
   }
 
   /**
-   * Commit a visibility change and queue it. Only `hiddenModels` is sent: the
+   * Commit an allowlist change and queue it. Only `enabledModels` is sent: the
    * credential fields are the Save button's business, and an autosave must not
    * quietly re-commit a URL or key the user is still editing.
    */
-  const applyHidden = (next: string[]): void => {
-    setHidden(next)
+  const applyEnabled = (next: string[] | undefined): void => {
+    setEnabled(next)
     setNotice(undefined)
     setModelsStatus('saving')
     setModelsError(undefined)
@@ -172,16 +171,21 @@ export function MagpieSettings(): unknown {
     setError(undefined)
     setNotice(undefined)
     try {
-      const saved = (await request('/api/magpie-settings', 'POST', { baseUrl, apiKey, hiddenModels: hidden })) as {
+      const saved = (await request('/api/magpie-settings', 'POST', {
+        baseUrl,
+        apiKey,
+        ...(enabled === undefined ? {} : { enabledModels: enabled }),
+      })) as {
         baseUrl: string
         apiKey: string
-        hiddenModels: string[]
+        enabledModels?: string[]
       }
       setBaseUrl(saved.baseUrl)
       setApiKey(saved.apiKey)
-      // The response carries the pruned set; adopt it without queueing a write
-      // of its own, which would be a pointless echo of what just landed.
-      setHidden(saved.hiddenModels ?? [])
+      // Adopt what the server stored, without queueing a write of its own —
+      // that would be a pointless echo of what just landed. The set comes back
+      // as submitted: the store no longer drops ids the directory omits.
+      setEnabled(saved.enabledModels)
       // A save can move the origin, the key, or the visible set: re-read the
       // rows so the list matches the picker the save just pushed out.
       await refreshModels()
@@ -245,11 +249,10 @@ export function MagpieSettings(): unknown {
 
       <ModelListEditor
         models={models}
-        visibleIds={visibleIds}
+        enabled={enabled}
         onFetch={fetchCandidates}
         onRefresh={refreshModels}
-        onRemove={(id) => applyHidden(hideOne(hidden, id))}
-        onHiddenChange={applyHidden}
+        onEnabledChange={applyEnabled}
         disabled={!loaded || working}
         fetchable={!incomplete}
         status={modelsStatus}

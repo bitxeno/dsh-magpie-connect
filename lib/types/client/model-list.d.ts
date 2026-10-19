@@ -3,13 +3,17 @@ import { type CandidateRow, type ModelRow } from './model-visibility.ts';
  * The model list of the Magpie gateway, plus the action that asks the gateway
  * what it serves.
  *
- * The list shows only *enabled* models: this plugin's picker is the gateway's
- * whole catalog minus a hidden set, so a hidden row would be a row that is
- * invisible everywhere it matters. Hidden models live in the fetch dialog
- * instead, which is the one surface that can both show and re-enable them.
- * That is also why a row's control is a delete button rather than a
- * checkbox — with nothing hidden on screen, unticking and deleting are the
- * same act, and only deleting reads correctly.
+ * The list is the **allowlist**, matching DSH's own Models settings: every row is
+ * a model the picker offers, and a model absent from the list is not offered.
+ * Removing a row is therefore a real removal, not a visibility toggle, and a
+ * model the gateway re-lists later stays out until it is added again.
+ *
+ * "Restore defaults" drops the stored list entirely, which means "inherit the
+ * gateway directory" — the same meaning an absent list has in the built-in
+ * editor. Without that action an empty allowlist would be a one-way door.
+ *
+ * The dialog offers the gateway's live directory; ticking rows and applying
+ * replaces the allowlist with exactly those rows.
  *
  * Fetching asks the endpoint **the form currently shows** — including a key
  * typed but not yet saved — so filling in a gateway is one pass instead of
@@ -19,10 +23,13 @@ import { type CandidateRow, type ModelRow } from './model-visibility.ts';
 export type { CandidateRow, ModelRow };
 /** Props of {@link ModelListEditor}. */
 export interface ModelListEditorProps {
-    /** The rows as currently drafted (the gateway's directory). */
+    /** One row per model the gateway directory holds, each flagged with its allowlist state. */
     models: readonly ModelRow[];
-    /** The ids the picker currently offers (the drafted rows minus the hidden set). */
-    visibleIds: ReadonlySet<string>;
+    /**
+     * The stored allowlist: `undefined` = inherit the whole directory, otherwise
+     * exactly these ids. Three-state, so it cannot collapse to a plain array.
+     */
+    enabled: readonly string[] | undefined;
     /**
      * Ask the gateway for its current catalog. Rejects with a display-ready
      * message; the editor owns showing it.
@@ -35,10 +42,8 @@ export interface ModelListEditorProps {
      * has a row to appear in.
      */
     onRefresh: () => Promise<void>;
-    /** Hide one model (the list's delete action). */
-    onRemove: (id: string) => void;
-    /** Replace the whole hidden set (the dialog's adopt action). */
-    onHiddenChange: (hidden: string[]) => void;
+    /** Replace the allowlist (`undefined` = restore inheritance). */
+    onEnabledChange: (enabled: string[] | undefined) => void;
     /** Disable every control (a pending save/probe). */
     disabled: boolean;
     /** Whether the connection fields are filled in enough to ask the gateway. */

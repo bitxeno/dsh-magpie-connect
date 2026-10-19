@@ -312,13 +312,13 @@ test('catalog announces only when the exposed set actually changed', async () =>
     await catalog.refreshOnce()
     assert.equal(announced.length, 1, 'identical refresh does not announce')
 
-    catalog.setHidden(['codex/gpt-5.6-terra'])
-    assert.equal(announced.length, 2, 'hiding a model announces')
-    // Re-applying the same hidden set is a no-op.
-    catalog.setHidden(['codex/gpt-5.6-terra'])
-    assert.equal(announced.length, 2, 'unchanged hidden set does not announce')
-    catalog.setHidden([])
-    assert.equal(announced.length, 3, 'showing a model again announces')
+    catalog.setEnabled(['codex/gpt-5.6-terra'])
+    assert.equal(announced.length, 2, 'narrowing the allowlist announces')
+    // Re-applying the same allowlist is a no-op.
+    catalog.setEnabled(['codex/gpt-5.6-terra'])
+    assert.equal(announced.length, 2, 'unchanged allowlist does not announce')
+    catalog.setEnabled(null)
+    assert.equal(announced.length, 3, 'restoring inheritance announces')
 
     catalog.setBaseUrl('')
     assert.equal(announced.length, 4, 'clearing the origin announces')

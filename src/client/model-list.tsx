@@ -2,9 +2,11 @@ import { useMemo, useState } from 'react'
 import { Button, Input, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import { text } from './i18n.ts'
 import {
-  hiddenAfterAdopt,
+  disableOne,
+  enabledAfterAdopt,
   initialPicked,
   toggleAllPicked,
+  toggleAllWouldClear,
   type CandidateRow,
   type ModelRow,
 } from './model-visibility.ts'
@@ -12,13 +14,17 @@ import {
  * The model list of the Magpie gateway, plus the action that asks the gateway
  * what it serves.
  *
- * The list shows only *enabled* models: this plugin's picker is the gateway's
- * whole catalog minus a hidden set, so a hidden row would be a row that is
- * invisible everywhere it matters. Hidden models live in the fetch dialog
- * instead, which is the one surface that can both show and re-enable them.
- * That is also why a row's control is a delete button rather than a
- * checkbox — with nothing hidden on screen, unticking and deleting are the
- * same act, and only deleting reads correctly.
+ * The list is the **allowlist**, matching DSH's own Models settings: every row is
+ * a model the picker offers, and a model absent from the list is not offered.
+ * Removing a row is therefore a real removal, not a visibility toggle, and a
+ * model the gateway re-lists later stays out until it is added again.
+ *
+ * "Restore defaults" drops the stored list entirely, which means "inherit the
+ * gateway directory" — the same meaning an absent list has in the built-in
+ * editor. Without that action an empty allowlist would be a one-way door.
+ *
+ * The dialog offers the gateway's live directory; ticking rows and applying
+ * replaces the allowlist with exactly those rows.
  *
  * Fetching asks the endpoint **the form currently shows** — including a key
  * typed but not yet saved — so filling in a gateway is one pass instead of
@@ -30,10 +36,13 @@ export type { CandidateRow, ModelRow }
 
 /** Props of {@link ModelListEditor}. */
 export interface ModelListEditorProps {
-  /** The rows as currently drafted (the gateway's directory). */
+  /** One row per model the gateway directory holds, each flagged with its allowlist state. */
   models: readonly ModelRow[]
-  /** The ids the picker currently offers (the drafted rows minus the hidden set). */
-  visibleIds: ReadonlySet<string>
+  /**
+   * The stored allowlist: `undefined` = inherit the whole directory, otherwise
+   * exactly these ids. Three-state, so it cannot collapse to a plain array.
+   */
+  enabled: readonly string[] | undefined
   /**
    * Ask the gateway for its current catalog. Rejects with a display-ready
    * message; the editor owns showing it.
@@ -46,10 +55,8 @@ export interface ModelListEditorProps {
    * has a row to appear in.
    */
   onRefresh: () => Promise<void>
-  /** Hide one model (the list's delete action). */
-  onRemove: (id: string) => void
-  /** Replace the whole hidden set (the dialog's adopt action). */
-  onHiddenChange: (hidden: string[]) => void
+  /** Replace the allowlist (`undefined` = restore inheritance). */
+  onEnabledChange: (enabled: string[] | undefined) => void
   /** Disable every control (a pending save/probe). */
   disabled: boolean
   /** Whether the connection fields are filled in enough to ask the gateway. */
@@ -83,6 +90,9 @@ const css: Record<string, Record<string, string | number>> = {
   itemId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
   chips: { display: 'flex', gap: 6, flexWrap: 'wrap' },
   chip: { fontSize: 11, lineHeight: '18px', padding: '0 7px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' },
+  // A row the live gateway does not list is informational, not a capability the
+  // user is choosing: read it as dimmer than the capability chips.
+  chipStale: { color: 'var(--dsw-alias-label-tertiary)', borderStyle: 'dashed' },
   candidateToolbar: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
   candidateSearch: { flex: 1, minWidth: 0 },
   candidateList: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, margin: 0, padding: 0, listStyle: 'none', overflowY: 'auto' },
@@ -115,12 +125,35 @@ function chipsFor(row: CandidateRow): Array<{ key: string; label: string }> {
 }
 
 /**
+ * The chip that says where a row is coming from, when that is not the live
+ * gateway: with an unreachable gateway the rows are the built-in snapshot, and
+ * the difference has to be readable.
+ */
+function sourceChip(row: ModelRow): { key: string; label: string } | undefined {
+  if (row.source === 'static') return { key: 'source', label: text('sourceStatic') }
+  if (row.source === 'none') return { key: 'source', label: text('sourceStale') }
+  return undefined
+}
+
+/**
+ * Filter rows by the card-wide query, against either section.
+ * @param rows - the section's rows.
+ * @param query - the filter text as typed.
+ * @returns the rows whose id or display name matches.
+ */
+function filterRows(rows: readonly ModelRow[], query: string): readonly ModelRow[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return rows
+  return rows.filter((row) => row.id.toLowerCase().includes(needle) || row.displayName.toLowerCase().includes(needle))
+}
+
+/**
  * Render the model list with its fetch action.
  * @param props - the drafted rows, the current visibility set, and the fetch/toggle callbacks.
  * @returns the model-list editor.
  */
 export function ModelListEditor(props: ModelListEditorProps): unknown {
-  const { models, visibleIds, onFetch, onRefresh, onRemove, onHiddenChange, disabled, fetchable, status } = props
+  const { models, enabled, onFetch, onRefresh, onEnabledChange, disabled, fetchable, status } = props
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   /** Fetch/discovery failure — distinct from the autosave failure in `props.failure`. */
@@ -129,13 +162,19 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set())
   const [candidateQuery, setCandidateQuery] = useState('')
 
-  // Only enabled models are listed; hidden ones are the dialog's business.
-  const enabledRows = useMemo(() => models.filter((row) => visibleIds.has(row.id)), [models, visibleIds])
-  const visibleRows = useMemo(() => {
-    const needle = filter.trim().toLowerCase()
-    if (needle === '') return enabledRows
-    return enabledRows.filter((row) => row.id.toLowerCase().includes(needle) || row.displayName.toLowerCase().includes(needle))
-  }, [enabledRows, filter])
+  // The allowlist is the source of truth for membership; `models` only supplies
+  // the rows (id + capabilities) the directory currently knows about.
+  //
+  // `enabled` is the *drafted* list, so it has to win over `row.enabled`, which
+  // is the server's copy of the same fact as of the last read. Rendering from
+  // the row made a delete invisible until the next refresh re-read the list.
+  const inheriting = enabled === undefined
+  const offeredIds = useMemo(
+    () => (enabled === undefined ? new Set(models.filter((row) => row.enabled).map((row) => row.id)) : new Set(enabled)),
+    [models, enabled],
+  )
+  const enabledRows = useMemo(() => models.filter((row) => offeredIds.has(row.id)), [models, offeredIds])
+  const visibleRows = useMemo(() => filterRows(enabledRows, filter), [enabledRows, filter])
 
   const togglePicked = (id: string): void => {
     setPicked((current) => {
@@ -153,7 +192,7 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
       (candidate) => candidate.id.toLowerCase().includes(needle) || candidate.displayName.toLowerCase().includes(needle),
     )
   }, [candidates, candidateQuery])
-  const allVisiblePicked = visibleCandidates.length > 0 && visibleCandidates.every((candidate) => picked.has(candidate.id))
+  const wouldClear = useMemo(() => toggleAllWouldClear(visibleCandidates, picked), [visibleCandidates, picked])
 
   const closePicker = (): void => {
     setCandidates(undefined)
@@ -172,12 +211,11 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
       }
       // The dialog asked the endpoint the form shows, so the list may be
       // holding an older directory. Re-read it before the user adopts: a model
-      // they tick here needs a row to land in, and a hidden id is pruned
-      // against the live directory on save.
+      // they tick here needs a row to land in.
       await onRefresh().catch(() => {})
       setCandidateQuery('')
       setCandidates(found)
-      setPicked(initialPicked(found, visibleIds))
+      setPicked(initialPicked(found, offeredIds))
     } catch (cause) {
       setFetchFailure(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -187,7 +225,10 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
 
   const adoptPicked = (): void => {
     if (candidates === undefined) return
-    onHiddenChange(hiddenAfterAdopt(candidates, picked))
+    // The selection replaces the allowlist: only what is ticked here is offered
+    // afterwards. A model the gateway stopped listing is therefore dropped from
+    // the list, and cannot return until it is added again.
+    onEnabledChange(enabledAfterAdopt(candidates, picked))
     closePicker()
   }
 
@@ -220,32 +261,56 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
         onChange={(event: { currentTarget: { value: string } }) => setFilter(event.currentTarget.value)}
       />
 
-      {enabledRows.length === 0 ? <p style={css.empty}>{models.length === 0 ? text('fetchEmpty') : text('allHidden')}</p> : null}
+      <p style={css.meta}>
+        {inheriting ? text('modelsInherited') : text('modelsCustomized', { count: enabledRows.length })}
+        {inheriting || disabled ? null : (
+          <button
+            type="button"
+            style={css.linkButton}
+            disabled={disabled}
+            onClick={() => onEnabledChange(undefined)}
+          >
+            {text('resetModels')}
+          </button>
+        )}
+      </p>
+
+      {enabledRows.length === 0 ? (
+        <p style={css.empty}>{models.length === 0 ? text('fetchEmpty') : text('allRemoved')}</p>
+      ) : null}
       <div style={css.list}>
-        {visibleRows.map((row) => (
-          <div key={row.id} style={css.item}>
-            <span style={css.itemMain}>
-              <span style={css.itemId}>{row.id}</span>
-              <span style={css.chips}>
-                {chipsFor(row).map((chip) => (
-                  <span key={chip.key} style={css.chip}>
-                    {chip.label}
-                  </span>
-                ))}
+        {visibleRows.map((row) => {
+          const source = sourceChip(row)
+          return (
+            <div key={row.id} style={css.item}>
+              <span style={css.itemMain}>
+                <span style={css.itemId}>{row.id}</span>
+                <span style={css.chips}>
+                  {chipsFor(row).map((chip) => (
+                    <span key={chip.key} style={css.chip}>
+                      {chip.label}
+                    </span>
+                  ))}
+                  {source === undefined ? null : (
+                    <span key={source.key} style={{ ...css.chip, ...css.chipStale }}>
+                      {source.label}
+                    </span>
+                  )}
+                </span>
               </span>
-            </span>
-            <button
-              type="button"
-              style={{ ...css.removeButton, ...(disabled ? { opacity: 0.5, cursor: 'default' } : {}) }}
-              disabled={disabled}
-              title={text('removeHint')}
-              aria-label={`${text('remove')} ${row.id}`}
-              onClick={() => onRemove(row.id)}
-            >
-              {text('remove')}
-            </button>
-          </div>
-        ))}
+              <button
+                type="button"
+                style={{ ...css.removeButton, ...(disabled ? { opacity: 0.5, cursor: 'default' } : {}) }}
+                disabled={disabled}
+                title={text('removeHint')}
+                aria-label={`${text('remove')} ${row.id}`}
+                onClick={() => onEnabledChange(disableOne(enabled ?? [], row.id))}
+              >
+                {text('remove')}
+              </button>
+            </div>
+          )
+        })}
       </div>
 
       {fetchFailure === undefined ? null : (
@@ -291,7 +356,7 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
             style={css.candidateSearch}
           />
           <Button variant="ghost" size="sm" disabled={visibleCandidates.length === 0} onClick={() => setPicked((current) => toggleAllPicked(current, visibleCandidates))}>
-            {allVisiblePicked ? text('fetchDeselectAll') : text('fetchSelectAll')}
+            {wouldClear ? text('fetchDeselectAll') : text('fetchSelectAll')}
           </Button>
         </div>
         {visibleCandidates.length === 0 ? (

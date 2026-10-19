@@ -128,29 +128,43 @@ export declare class ModelCatalog {
     refreshOnce(): Promise<void>;
     /** Whether a gateway API root is configured (empty baseUrl = not configured). */
     get configured(): boolean;
+    /**
+     * Adopt a directory the settings page just read from the gateway.
+     *
+     * The fetch dialog asks the endpoint the form shows and gets the freshest
+     * answer the session will see; the background refresh loop may be minutes
+     * behind, or silently failing on a 401. Without this, a model the gateway has
+     * dropped stays in the local directory — and therefore in the picker and the
+     * settings list — until the next *successful* refresh, which may never come.
+     *
+     * Whole-set replacement, never a merge: the reply is the gateway's entire
+     * catalog, so anything it no longer lists is gone. Empty input is refused
+     * rather than treated as "nothing served", because a bad endpoint or a
+     * transient failure must not blank the picker.
+     * @param entries - the decoded gateway directory just fetched.
+     * @returns whether the directory was adopted.
+     */
+    adoptDirectory(entries: Map<string, MagpieModelEntry>): boolean;
     refreshModels(): Promise<void>;
     getEntry(model: string): MagpieModelEntry | undefined;
     /**
-     * Replace the settings-page hidden set (models excluded from the picker).
-     * Announces: hiding/showing models changes the exposed list, and DSH's
-     * picker only re-reads it on `llm/adapters-updated`.
+     * Replace the settings-page allowlist (`null` = inherit the whole directory).
+     * Announces: the exposed set changes, and DSH's picker only re-reads it on
+     * `llm/adapters-updated`.
+     * @param ids - the allowed model ids, or `null` to inherit.
      */
-    setHidden(ids: readonly string[]): void;
-    /** Currently hidden model ids. */
-    hidden(): string[];
+    setEnabled(ids: readonly string[] | null): void;
+    /** The allowlist as stored: `null` when inheriting. */
+    enabled(): string[] | null;
     /**
-     * Drop hidden ids the gateway no longer serves.
-     *
-     * The hidden set is only meaningful against a live directory: keeping an id
-     * that has since left `GET /models` would make the settings page carry rows
-     * nobody can act on, and a model that later returns would come back
-     * invisibly hidden for no reason the user can see. Called on save, when the
-     * directory is the freshest the session has.
-     * @param ids - the hidden set as submitted.
-     * @returns the subset still worth storing.
+     * Where one model id comes from right now: the live directory, the built-in
+     * snapshot, or nothing. The settings page labels its rows with this so a
+     * model the gateway stopped listing is not mistaken for one it still serves.
+     * @param model - the id to classify.
+     * @returns `'gateway'`, `'static'`, or `'none'`.
      */
-    pruneHidden(ids: readonly string[]): string[];
-    isHidden(model: string): boolean;
+    sourceFor(model: string): 'gateway' | 'static' | 'none';
+    isEnabled(model: string): boolean;
     /**
      * Point the refresh loop at another API root or credential (settings page
      * change).
@@ -192,7 +206,15 @@ export declare class ModelCatalog {
     requiresResponsesApi(model: string): boolean;
     contextWindowFor(model: string): number;
     maxTokensFor(model: string): number;
-    /** ids exposed to DSH: live gateway list minus hidden (empty while unconfigured). */
+    /**
+     * Every id the directory knows right now, ignoring the allowlist: the live
+     * gateway list, else the cached copy, else the built-in snapshot.
+     *
+     * This is what the settings page renders (each row then says whether the
+     * allowlist offers it) and what the one-time migration intersects against.
+     */
+    directory(): string[];
+    /** ids exposed to DSH: the directory filtered by the allowlist (empty while unconfigured). */
     list(): string[];
     /** Catalog health snapshot (pending/ready/stale + counts). */
     snapshot(): CatalogSnapshot;

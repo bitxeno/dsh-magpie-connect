@@ -7,7 +7,8 @@ import {
   SettingsStore,
   defaultSettingsPath,
   normalizeBaseUrl,
-  normalizeHiddenModels,
+  migrateLegacySettings,
+  normalizeEnabledModels,
   normalizePageSettings,
   resolveEffectiveEndpoint,
 } from '../src/settings.ts'
@@ -31,18 +32,18 @@ test('normalizeBaseUrl keeps the version path and strips only a trailing slash',
   assert.throws(() => normalizeBaseUrl(42), /non-empty/)
 })
 
-test('normalizeHiddenModels dedupes and rejects junk', () => {
-  assert.deepEqual(normalizeHiddenModels(undefined), [])
-  assert.deepEqual(normalizeHiddenModels(['a', 'b', 'a', '  ']), ['a', 'b'])
-  assert.throws(() => normalizeHiddenModels('a'), /array/)
-  assert.throws(() => normalizeHiddenModels([42]), /array of model ids/)
+test('normalizeEnabledModels dedupes and rejects junk', () => {
+  assert.deepEqual(normalizeEnabledModels(undefined), [])
+  assert.deepEqual(normalizeEnabledModels(['a', 'b', 'a', '  ']), ['a', 'b'])
+  assert.throws(() => normalizeEnabledModels('a'), /array/)
+  assert.throws(() => normalizeEnabledModels([42]), /array of model ids/)
 })
 
 test('normalizePageSettings keeps known fields and drops unknown keys', () => {
-  assert.deepEqual(normalizePageSettings({ baseUrl: 'http://x/', apiKey: 'k', hiddenModels: ['m'], evil: 1 }), {
+  assert.deepEqual(normalizePageSettings({ baseUrl: 'http://x/', apiKey: 'k', enabledModels: ['m'], evil: 1 }), {
     baseUrl: 'http://x',
     apiKey: 'k',
-    hiddenModels: ['m'],
+    enabledModels: ['m'],
   })
   assert.deepEqual(normalizePageSettings({}), {})
   assert.throws(() => normalizePageSettings(null), /object/)
@@ -63,13 +64,13 @@ test('defaultSettingsPath lives next to the plugin data dir', () => {
 test('SettingsStore round-trips through a file and notifies listeners', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'magpie-settings-'))
   const store = new SettingsStore({ path: join(dir, 'settings.json') })
-  assert.deepEqual(store.get(), { hiddenModels: [] })
+  assert.deepEqual(store.get(), {})
   let notifications = 0
   const off = store.onChange(() => {
     notifications += 1
   })
-  const saved = await store.save({ baseUrl: 'http://127.0.0.1:3425/', apiKey: 'k', hiddenModels: ['a'] })
-  assert.deepEqual(saved, { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k', hiddenModels: ['a'] })
+  const saved = await store.save({ baseUrl: 'http://127.0.0.1:3425/', apiKey: 'k', enabledModels: ['a'] })
+  assert.deepEqual(saved, { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k', enabledModels: ['a'] })
   assert.equal(notifications, 1)
   off()
   // partial save merges
@@ -79,15 +80,15 @@ test('SettingsStore round-trips through a file and notifies listeners', async ()
   // a fresh store loads the persisted file
   const reloaded = new SettingsStore({ path: join(dir, 'settings.json') })
   await reloaded.load()
-  assert.deepEqual(reloaded.get(), { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k2', hiddenModels: ['a'] })
+  assert.deepEqual(reloaded.get(), { baseUrl: 'http://127.0.0.1:3425', apiKey: 'k2', enabledModels: ['a'] })
   await assert.rejects(store.save({ baseUrl: 'bogus' }), /valid URL/)
 })
 
 test('SettingsStore without a path stays in memory', async () => {
   const store = new SettingsStore()
   await store.load()
-  await store.save({ hiddenModels: ['x'] })
-  assert.deepEqual(store.get().hiddenModels, ['x'])
+  await store.save({ enabledModels: ['x'] })
+  assert.deepEqual(store.get().enabledModels, ['x'])
 })
 
 test('corrupt settings file reads as empty instead of throwing', async () => {
@@ -95,7 +96,7 @@ test('corrupt settings file reads as empty instead of throwing', async () => {
   const { writeFileSync } = await import('node:fs')
   writeFileSync(join(dir, 'settings.json'), '{broken')
   const store = new SettingsStore({ path: join(dir, 'settings.json') })
-  assert.deepEqual(await store.load(), { hiddenModels: [] })
+  assert.deepEqual(await store.load(), {})
 })
 
 function fakeFetch(body: unknown) {
@@ -109,27 +110,42 @@ const gatewayBody = {
   ],
 }
 
-test('catalog hidden set filters the picker but keeps resolveModel working', async () => {
+test('catalog allowlist narrows the picker but keeps resolveModel working', async () => {
   const catalog = new ModelCatalog({ fetchImpl: fakeFetch(gatewayBody), baseUrl: 'http://127.0.0.1:3425' })
   try {
     await catalog.refreshOnce()
     assert.deepEqual(catalog.list(), ['a', 'b'])
-    catalog.setHidden(['b', 'unknown-id'])
+    // An allowlist is exact membership: 'b' is out even though the gateway serves it.
+    catalog.setEnabled(['a'])
     assert.deepEqual(catalog.list(), ['a'])
-    assert.deepEqual(catalog.hidden(), ['b', 'unknown-id'])
-    assert.equal(catalog.isHidden('b'), true)
-    assert.equal(catalog.isHidden('a'), false)
+    assert.deepEqual(catalog.enabled(), ['a'])
+    assert.equal(catalog.isEnabled('a'), true)
+    assert.equal(catalog.isEnabled('b'), false)
     assert.equal(catalog.decision('b').allowed, false)
-    assert.equal(catalog.decision('b').source, 'hidden_by_settings')
+    assert.equal(catalog.decision('b').source, 'not_enabled_by_settings')
     assert.equal(catalog.reasoningFor('b')?.efforts.map((e) => e.id).join(','), 'low')
-    catalog.setHidden([])
+    // null restores inheritance of the whole directory.
+    catalog.setEnabled(null)
     assert.deepEqual(catalog.list(), ['a', 'b'])
+    assert.equal(catalog.enabled(), null)
   } finally {
     catalog.stop()
   }
 })
 
-test('catalog hidden set also filters the static fallback while pending', async () => {
+test('an empty allowlist offers nothing, unlike the old empty blacklist', async () => {
+  const catalog = new ModelCatalog({ fetchImpl: fakeFetch(gatewayBody), baseUrl: 'http://127.0.0.1:3425' })
+  try {
+    await catalog.refreshOnce()
+    catalog.setEnabled([])
+    assert.deepEqual(catalog.list(), [])
+    assert.deepEqual(catalog.directory(), ['a', 'b'])
+  } finally {
+    catalog.stop()
+  }
+})
+
+test('the allowlist also filters the static fallback while pending', async () => {
   const fail = (async () => {
     throw new Error('down')
   }) as typeof fetch
@@ -137,8 +153,10 @@ test('catalog hidden set also filters the static fallback while pending', async 
   await catalog.refreshOnce()
   const total = catalog.list().length
   assert.ok(total > 0)
-  catalog.setHidden([catalog.list()[0] as string])
-  assert.equal(catalog.list().length, total - 1)
+  const keep = catalog.list()[0] as string
+  catalog.setEnabled([keep])
+  assert.deepEqual(catalog.list(), [keep])
+  assert.equal(catalog.list().length, total > 1 ? 1 : total)
   catalog.stop()
 })
 
@@ -175,4 +193,73 @@ test('empty apiKey is rejected on save', async () => {
 
 test('apiKey surrounding whitespace is trimmed on save', async () => {
   assert.deepEqual(normalizePageSettings({ apiKey: '  k  ' }), { apiKey: 'k' })
+})
+
+test('legacy hiddenModels converts to the inverse allowlist', () => {
+  // The old document said "hide these"; the new one says "offer these". Reading
+  // it unchanged would offer exactly the models the user had removed.
+  const known = ['zcode/a', 'zcode/b', 'zcode/c', 'qoder/qfmodel']
+  const { settings, migrated } = migrateLegacySettings({ baseUrl: 'http://gw/v1', apiKey: 'k', hiddenModels: ['zcode/b', 'zcode/c'] }, known)
+  assert.equal(migrated, true)
+  assert.deepEqual(settings, {
+    baseUrl: 'http://gw/v1',
+    apiKey: 'k',
+    enabledModels: ['zcode/a', 'qoder/qfmodel'],
+    migratedFromHiddenModels: true,
+  })
+  assert.equal('hiddenModels' in settings, false, 'the blacklist key is gone')
+})
+
+test('migration is idempotent: an already-converted document is left alone', () => {
+  const already = { enabledModels: ['a'], migratedFromHiddenModels: true as const }
+  const { settings, migrated } = migrateLegacySettings(already, ['a', 'b'])
+  assert.equal(migrated, false)
+  assert.deepEqual(settings, already)
+})
+
+test('a converted document that still carries hiddenModels is not inverted twice', () => {
+  // Belt and braces: if a stray hiddenModels survived alongside the marker, the
+  // marker wins — re-inverting would silently change which models are offered.
+  const { settings, migrated } = migrateLegacySettings(
+    { enabledModels: ['a'], hiddenModels: ['a'], migratedFromHiddenModels: true },
+    ['a', 'b'],
+  )
+  assert.equal(migrated, false)
+  assert.deepEqual(settings.enabledModels, ['a'])
+})
+
+test('migration without a known directory inherits instead of guessing', () => {
+  // Cold start with an unreachable gateway: the allowlist cannot be computed, so
+  // the document falls back to "inherit everything" rather than to a list that
+  // might drop models the user can still use.
+  const { settings, migrated } = migrateLegacySettings({ hiddenModels: ['zcode/b'] })
+  assert.equal(migrated, true)
+  assert.equal(settings.enabledModels, undefined)
+  assert.equal(settings.migratedFromHiddenModels, true)
+})
+
+test('a file with neither shape is not treated as legacy', () => {
+  const { settings, migrated } = migrateLegacySettings({ baseUrl: 'http://gw/v1', apiKey: 'k' }, ['a'])
+  assert.equal(migrated, false)
+  assert.deepEqual(settings, { baseUrl: 'http://gw/v1', apiKey: 'k' })
+})
+
+test('load() rewrites a legacy file on disk exactly once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-migrate-'))
+  const path = join(dir, 'settings.json')
+  const { writeFileSync, readFileSync } = await import('node:fs')
+  writeFileSync(path, JSON.stringify({ baseUrl: 'http://gw/v1', apiKey: 'k', hiddenModels: ['b'] }))
+
+  const store = new SettingsStore({ path })
+  const loaded = await store.load(['a', 'b', 'c'])
+  assert.deepEqual(loaded.enabledModels, ['a', 'c'])
+
+  const onDisk = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+  assert.equal('hiddenModels' in onDisk, false)
+  assert.deepEqual(onDisk.enabledModels, ['a', 'c'])
+  assert.equal(onDisk.migratedFromHiddenModels, true)
+
+  // A second boot must not re-invert the already-converted file.
+  const again = new SettingsStore({ path })
+  assert.deepEqual((await again.load(['a', 'b', 'c'])).enabledModels, ['a', 'c'])
 })

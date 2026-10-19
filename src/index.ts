@@ -101,11 +101,20 @@ interface ModelRow {
   responsesOnly: boolean
   reasoning: boolean
   efforts: string[]
-  hidden: boolean
+  /** Whether the allowlist currently offers this model in the picker. */
+  enabled: boolean
+  /**
+   * What lists this id right now: `'gateway'` (the live directory), `'static'`
+   * (only the built-in snapshot) or `'none'` (nothing does — a hidden id the
+   * gateway has dropped). The page labels the last two so a stale row cannot be
+   * mistaken for a model the gateway still serves. Candidates from the discover
+   * route leave it unset: they come from the gateway by construction.
+   */
+  source?: 'gateway' | 'static' | 'none'
 }
 
-/** One discovered candidate: a {@link ModelRow} without this plugin's own visibility flag. */
-export type CandidateRow = Omit<ModelRow, 'hidden'>
+/** One discovered candidate: a {@link ModelRow} without this plugin's own allowlist flag. */
+export type CandidateRow = Omit<ModelRow, 'enabled'>
 
 /** True when the endpoints advertise responses but not chat completions. */
 function responsesOnlyFor(nativeEndpoints: readonly string[]): boolean {
@@ -158,13 +167,24 @@ async function readRouteBody(request: Request): Promise<unknown> {
   }
 }
 
+/**
+ * The rows the settings page renders.
+ *
+ * One row per id the gateway directory holds, each flagged with whether the
+ * allowlist offers it. Unlike the old blacklist shape there are no extra rows
+ * for ids outside the directory: an allowlist entry the gateway no longer
+ * serves is simply not a model any more, and surfacing it would offer the user
+ * a checkbox that can never take effect.
+ */
 function buildModelRows(backend: SettingsBackend): ModelRow[] {
   const { store, catalog } = backend
-  const hidden = new Set(store.get().hiddenModels ?? [])
-  // Hidden ids survive in the list even when the gateway no longer serves
-  // them: a stale entry must stay reachable so it can be un-hidden again.
-  const ids = new Set<string>([...catalog.list(), ...hidden])
-  return [...ids].sort().map((id) => ({ ...toRow(id, catalog.getEntry(id)), hidden: hidden.has(id) }))
+  const allowlist = store.get().enabledModels
+  const allowed = allowlist === undefined ? undefined : new Set(allowlist)
+  return catalog.directory().sort().map((id) => ({
+    ...toRow(id, catalog.getEntry(id)),
+    enabled: allowed === undefined || allowed.has(id),
+    source: catalog.sourceFor(id),
+  }))
 }
 
 function backendOrThrow(): SettingsBackend {
@@ -194,7 +214,8 @@ async function handleSettingsGet(): Promise<Response> {
     return routeOk({
       baseUrl: endpoint.baseUrl,
       apiKey: endpoint.apiKey,
-      hiddenModels: page.hiddenModels ?? [],
+      enabledModels: page.enabledModels,
+      inheritedModels: page.enabledModels === undefined,
       fromPage: page,
       fromPatch: backend.patchEndpoint,
     })
@@ -208,11 +229,11 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     const backend = backendOrThrow()
     const body = await readRouteBody(request)
     const normalized = normalizePageSettings(body)
-    // Prune ids the gateway no longer serves: the page only ever shows live
-    // rows, so a stale hidden id could otherwise never be seen or cleared.
-    if (normalized.hiddenModels !== undefined) {
-      normalized.hiddenModels = backend.catalog.pruneHidden(normalized.hiddenModels)
-    }
+    // The submitted hidden set is stored **as submitted**. Dropping ids the
+    // current directory does not list would silently undo a delete: a lane's
+    // models come and go between refreshes, so the two ids removed while the
+    // gateway happened to be un-listing them would be forgotten, then reappear
+    // in the picker on the next refresh that listed them again.
     const saved = await backend.store.save(normalized)
     backend.applyPageSettings()
     // A save can move the endpoint (or just the key), so re-read the directory
@@ -230,7 +251,12 @@ async function handleSettingsPost(request: Request): Promise<Response> {
       ])
     }
     const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, saved)
-    return routeOk({ baseUrl: endpoint.baseUrl, apiKey: endpoint.apiKey, hiddenModels: saved.hiddenModels ?? [] })
+    return routeOk({
+      baseUrl: endpoint.baseUrl,
+      apiKey: endpoint.apiKey,
+      enabledModels: saved.enabledModels,
+      inheritedModels: saved.enabledModels === undefined,
+    })
   } catch (error) {
     return routeFail(error)
   }
@@ -298,6 +324,12 @@ async function handleDiscoverPost(request: Request): Promise<Response> {
     const body = (await readRouteBody(request)) as { baseUrl?: unknown; apiKey?: unknown }
     const { origin, key } = probeTarget(backend, body)
     const models = await fetchMagpieModels(origin, fetch, { headers: { authorization: `Bearer ${key}` } })
+    // The reply is the gateway's whole catalog as of now, so the local
+    // directory adopts it wholesale. Without this, a model the gateway dropped
+    // lingers in the list (and the picker) until a *successful* background
+    // refresh — which on a key-guarded gateway may never come. That is how a
+    // model already gone from the dialog kept showing in the settings list.
+    backend.catalog.adoptDirectory(models)
     const candidates = [...models.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, entry]) => toRow(id, entry))
@@ -487,7 +519,7 @@ export function apply(
     // The value is the versioned root (`…/v1`), passed through untouched.
     const configured = isConfigured(endpoint)
     catalog.setEndpoint(configured ? endpoint.baseUrl.replace(/\/+$/, '') : '', configured ? endpoint.apiKey : '')
-    catalog.setHidden(page.hiddenModels ?? [])
+    catalog.setEnabled(page.enabledModels ?? null)
   }
   const adapter = new MagpieAdapter(catalog, {
     providerId: cfg.providerId,
@@ -522,11 +554,16 @@ export function apply(
   ctx.llm.registerAdapter([cfg.providerId], adapter)
   logger.info(`dsh-magpie-connect: adapter registered for "${cfg.providerId}" (catalog warms up in background)`)
   void (async () => {
-    await store.load()
-    applyPageSettings()
+    // Order matters for the one-time migration: `enabledModels` can only be
+    // computed from the ids the old blacklist rules would have offered, so the
+    // directory has to be warm before the settings document is converted.
+    // Warming it first also means a legacy file converts against the live
+    // gateway rather than against nothing.
     await catalog.start().catch((err) => {
       logger.error(`dsh-magpie-connect: catalog start failed: ${err instanceof Error ? err.message : String(err)}`)
     })
+    await store.load(catalog.directory())
+    applyPageSettings()
   })().catch((err) => {
     logger.error(`dsh-magpie-connect: startup failed: ${err instanceof Error ? err.message : String(err)}`)
   })

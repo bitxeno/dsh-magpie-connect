@@ -6,14 +6,31 @@ import { dirname, join } from 'node:path'
  *
  * Precedence for the effective endpoint: settings page (this file, only the
  * fields the user actually saved) > cordis patch config > built-in defaults.
- * Hidden models only ever come from this file — the patch config has no such
- * field, so an empty/absent list means "show everything".
+ *
+ * `enabledModels` is an **allowlist**, matching DSH's own Models settings: the
+ * picker offers the intersection of the gateway directory and this list. `null`
+ * (absent) means "inherit the whole directory", `[]` means "offer nothing", and
+ * a populated array means exactly those ids. The old blacklist
+ * (`hiddenModels`) could not express "the gateway added a model I don't want
+ * yet"; an allowlist can, and it is why a model the gateway re-lists never
+ * comes back on its own.
  */
 
 export interface MagpiePageSettings {
   baseUrl?: string
   apiKey?: string
-  hiddenModels?: string[]
+  /**
+   * Allowlist of model ids the picker offers. `undefined` = inherit every model
+   * the gateway serves; `[]` = offer none; otherwise exactly these ids.
+   */
+  enabledModels?: string[]
+  /**
+   * Set once the `hiddenModels` (blacklist) document has been converted to
+   * `enabledModels`. Its presence stops the migration from running twice — a
+   * second run would read an already-allowlisted document as if it were a
+   * blacklist and invert it into nonsense.
+   */
+  migratedFromHiddenModels?: true
 }
 
 export interface EffectiveEndpoint {
@@ -53,13 +70,13 @@ export function normalizeBaseUrl(raw: unknown): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
 }
 
-/** Normalize a hidden-model list: strings only, deduped, order kept. */
-export function normalizeHiddenModels(raw: unknown): string[] {
+/** Normalize an enabled-model allowlist: strings only, deduped, order kept. */
+export function normalizeEnabledModels(raw: unknown): string[] {
   if (raw === undefined) return []
-  if (!Array.isArray(raw)) throw new Error('dsh-magpie-connect: hiddenModels must be an array of model ids')
+  if (!Array.isArray(raw)) throw new Error('dsh-magpie-connect: enabledModels must be an array of model ids')
   const out: string[] = []
   for (const entry of raw) {
-    if (typeof entry !== 'string') throw new Error('dsh-magpie-connect: hiddenModels must be an array of model ids')
+    if (typeof entry !== 'string') throw new Error('dsh-magpie-connect: enabledModels must be an array of model ids')
     const id = entry.trim()
     if (id !== '' && !out.includes(id)) out.push(id)
   }
@@ -79,8 +96,57 @@ export function normalizePageSettings(raw: unknown): MagpiePageSettings {
     // Surrounding whitespace is always a paste artifact in Bearer keys.
     out.apiKey = record.apiKey.trim()
   }
-  if (record.hiddenModels !== undefined) out.hiddenModels = normalizeHiddenModels(record.hiddenModels)
+  if (record.enabledModels !== undefined) out.enabledModels = normalizeEnabledModels(record.enabledModels)
+  if (record.migratedFromHiddenModels === true) out.migratedFromHiddenModels = true
   return out
+}
+
+/** Deep copy so a caller cannot mutate the store through a returned object. */
+function cloneSettings(source: MagpiePageSettings): MagpiePageSettings {
+  return {
+    ...source,
+    ...(source.enabledModels === undefined ? {} : { enabledModels: [...source.enabledModels] }),
+  }
+}
+
+/**
+ * One-time conversion from the old blacklist document to the allowlist.
+ *
+ * The legacy file stored `hiddenModels` (ids to *exclude*). The new shape stores
+ * `enabledModels` (ids to *include*), so the two are not interchangeable: an
+ * unconverted file would be read as "offer exactly the models I had hidden",
+ * which is the precise inverse of what the user asked for.
+ *
+ * `known` is the ids the picker would have offered under the old rules — the
+ * gateway directory (live, else cached, else the built-in snapshot) minus the
+ * hidden set. The conversion can only be computed from it, so the caller passes
+ * whatever directory it has; when nothing is known yet (unconfigured, cold
+ * cache), `enabledModels` is left absent, which means "inherit everything" —
+ * the only reading that cannot silently drop models the user can still use.
+ *
+ * The marker `migratedFromHiddenModels` is written even when the list could not
+ * be computed: the blacklist is gone either way, and re-running the conversion
+ * later would invert an already-converted document.
+ * @param raw - the parsed settings document.
+ * @param known - ids the old rules would have offered, or `undefined` when unknown.
+ * @returns the converted document and whether anything changed.
+ */
+export function migrateLegacySettings(
+  raw: unknown,
+  known?: readonly string[],
+): { settings: MagpiePageSettings; migrated: boolean } {
+  if (!raw || typeof raw !== 'object') return { settings: {}, migrated: false }
+  const record = raw as Record<string, unknown>
+  const legacy = record.hiddenModels
+  if (record.migratedFromHiddenModels === true || !Array.isArray(legacy)) {
+    return { settings: normalizePageSettings(raw), migrated: false }
+  }
+  const hidden = new Set(legacy.filter((entry): entry is string => typeof entry === 'string').map((entry) => entry.trim()).filter((entry) => entry !== ''))
+  const base: Record<string, unknown> = { ...record, migratedFromHiddenModels: true }
+  delete base.hiddenModels
+  if (known !== undefined) base.enabledModels = known.filter((id) => !hidden.has(id))
+  const settings = normalizePageSettings(base)
+  return { settings, migrated: true }
 }
 
 /**
@@ -112,20 +178,34 @@ export class SettingsStore {
     this.#path = options.path
   }
 
-  /** Load persisted settings (missing/corrupt file reads as empty, never throws). */
-  async load(): Promise<MagpiePageSettings> {
+  /**
+   * Load persisted settings (missing/corrupt file reads as empty, never throws).
+   *
+   * Also runs the one-time `hiddenModels` -> `enabledModels` conversion. The
+   * rewrite is attempted at startup rather than lazily so the file on disk
+   * matches what the running process believes; a failed write is not fatal
+   * (the in-memory result is still correct), and the migration marker makes a
+   * retry idempotent.
+   * @param known - ids the old blacklist rules would have offered, used to
+   *   compute the allowlist; omitted when the directory is not known yet.
+   */
+  async load(known?: readonly string[]): Promise<MagpiePageSettings> {
     if (!this.#path) return this.get()
+    let raw: unknown
     try {
-      const raw = JSON.parse(await readFile(this.#path, 'utf8')) as unknown
-      this.#settings = normalizePageSettings(raw)
+      raw = JSON.parse(await readFile(this.#path, 'utf8'))
     } catch {
       this.#settings = {}
+      return this.get()
     }
+    const { settings, migrated } = migrateLegacySettings(raw, known)
+    this.#settings = settings
+    if (migrated) await this.persist().catch(() => {})
     return this.get()
   }
 
   get(): MagpiePageSettings {
-    return { ...this.#settings, hiddenModels: [...(this.#settings.hiddenModels ?? [])] }
+    return cloneSettings(this.#settings)
   }
 
   /** Merge a partial payload, persist, and notify listeners. */
@@ -139,7 +219,7 @@ export class SettingsStore {
 
   /** Replace the whole document (used at startup after load). */
   replace(next: MagpiePageSettings): void {
-    this.#settings = { ...next, hiddenModels: [...(next.hiddenModels ?? [])] }
+    this.#settings = cloneSettings(next)
     this.#emit()
   }
 

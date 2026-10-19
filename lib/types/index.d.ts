@@ -71,10 +71,19 @@ interface ModelRow {
     responsesOnly: boolean;
     reasoning: boolean;
     efforts: string[];
-    hidden: boolean;
+    /** Whether the allowlist currently offers this model in the picker. */
+    enabled: boolean;
+    /**
+     * What lists this id right now: `'gateway'` (the live directory), `'static'`
+     * (only the built-in snapshot) or `'none'` (nothing does — a hidden id the
+     * gateway has dropped). The page labels the last two so a stale row cannot be
+     * mistaken for a model the gateway still serves. Candidates from the discover
+     * route leave it unset: they come from the gateway by construction.
+     */
+    source?: 'gateway' | 'static' | 'none';
 }
-/** One discovered candidate: a {@link ModelRow} without this plugin's own visibility flag. */
-export type CandidateRow = Omit<ModelRow, 'hidden'>;
+/** One discovered candidate: a {@link ModelRow} without this plugin's own allowlist flag. */
+export type CandidateRow = Omit<ModelRow, 'enabled'>;
 /** @internal Test hook: forget installed routes so the next apply reinstalls. */
 export declare function __resetSettingsRoutes(): void;
 export declare function apply(ctx: PluginContext, config?: DshMagpieConnectConfig): {

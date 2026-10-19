@@ -4,7 +4,8 @@ import { createServer, type Server } from 'node:http'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply, DISCOVER_API, MODELS_API, SETTINGS_API, TEST_API, __resetSettingsRoutes, type PluginContext } from '../src/index.ts'
+import { apply, DISCOVER_API, MODELS_API, SETTINGS_API, TEST_API, __resetSettingsRoutes, type CandidateRow, type PluginContext } from '../src/index.ts'
+import { enabledAfterAdopt } from '../src/client/model-visibility.ts'
 
 const gatewayBody = {
   data: [
@@ -93,6 +94,29 @@ async function withServer(body: unknown): Promise<{ server: Server; origin: stri
 }
 
 /**
+ * A gateway whose directory the test moves between requests: a lane's models
+ * come and go between refreshes, and that is exactly when the hidden set used to
+ * lose a delete.
+ */
+async function withMutableServer(
+  initial: readonly string[],
+): Promise<{ server: Server; origin: string; serve: (ids: readonly string[]) => void }> {
+  let ids = [...initial]
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        data: ids.map((id) => ({ id, native_endpoints: ['/v1/chat/completions'], reasoning: false })),
+      }),
+    )
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  const port = typeof address === 'object' && address !== null ? address.port : 0
+  return { server, origin: `http://127.0.0.1:${port}`, serve: (next) => (ids = [...next]) }
+}
+
+/**
  * A gateway that guards `GET /models` with a Bearer key, exactly like the real
  * Magpie gateway (which answers 401 to a keyless request). The catalog refresh
  * and the fetch dialog must both authenticate.
@@ -147,8 +171,8 @@ test('apply registers the adapter and serves settings/models/test routes', async
   assert.deepEqual((settings.payload as { value: unknown }).value, {
     baseUrl: origin,
     apiKey: 'test-key',
-    hiddenModels: [],
-    fromPage: { hiddenModels: [] },
+    inheritedModels: true,
+    fromPage: {},
     fromPatch: { baseUrl: origin, apiKey: 'test-key' },
   })
 
@@ -161,7 +185,7 @@ test('apply registers the adapter and serves settings/models/test routes', async
   assert.equal((probed.payload as { value: { count: number } }).value.count, 2)
 })
 
-test('POST settings persists, hides models from the picker, and validates', async (t) => {
+test('POST settings persists the allowlist, narrows the picker, and validates', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   const dir = mkdtempSync(join(tmpdir(), 'magpie-apply-'))
@@ -170,20 +194,27 @@ test('POST settings persists, hides models from the picker, and validates', asyn
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: dir })
   await settled()
 
-  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['b'] })
   assert.equal((saved.payload as { ok: boolean }).ok, true)
-  assert.deepEqual((saved.payload as { value: unknown }).value, { baseUrl: origin, apiKey: 'test-key', hiddenModels: ['b'] })
+  assert.deepEqual((saved.payload as { value: unknown }).value, {
+    baseUrl: origin,
+    apiKey: 'test-key',
+    enabledModels: ['b'],
+    inheritedModels: false,
+  })
 
   const models = await callRoute(ctx.routes, MODELS_API, 'GET')
-  const rows = (models.payload as { value: { models: Array<{ id: string; hidden: boolean }> } }).value.models
+  const rows = (models.payload as { value: { models: Array<{ id: string; enabled: boolean }> } }).value.models
+  // Both rows are still listed (the directory has them); only 'b' is offered.
   assert.deepEqual(rows.map((row) => row.id).sort(), ['a', 'b'])
-  assert.deepEqual(rows.find((row) => row.id === 'b')?.hidden, true)
+  assert.equal(rows.find((row) => row.id === 'b')?.enabled, true)
+  assert.equal(rows.find((row) => row.id === 'a')?.enabled, false)
 
   const bad = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: 'bogus' })
   assert.equal((bad.payload as { ok: boolean }).ok, false)
 })
 
-test('an autosave that sends only hiddenModels leaves credentials untouched', async (t) => {
+test('an autosave that sends only enabledModels leaves credentials untouched', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   __resetSettingsRoutes()
@@ -195,12 +226,13 @@ test('an autosave that sends only hiddenModels leaves credentials untouched', as
   // shape every remove and adopt takes now. It must not re-commit, blank, or
   // otherwise disturb what the credential form is holding.
   await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: origin, apiKey: 'page-key' })
-  const autosaved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  const autosaved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['b'] })
   assert.equal((autosaved.payload as { ok: boolean }).ok, true)
   assert.deepEqual((autosaved.payload as { value: unknown }).value, {
     baseUrl: origin,
     apiKey: 'page-key',
-    hiddenModels: ['b'],
+    enabledModels: ['b'],
+    inheritedModels: false,
   })
 
   const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')
@@ -256,7 +288,7 @@ test('missing apiKey gates the picker, saves, and the test probe', async (t) => 
   )
 })
 
-test('hiding models emits llm/adapters-updated so the picker re-reads', async (t) => {
+test('narrowing the allowlist emits llm/adapters-updated so the picker re-reads', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   __resetSettingsRoutes()
@@ -267,15 +299,15 @@ test('hiding models emits llm/adapters-updated so the picker re-reads', async (t
   assert.equal(afterStart, 1, 'the first catalog fill announces')
 
   // The picker caches one catalog read per Host generation and re-reads only
-  // on this event, so a save that hides a model must publish it.
-  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  // on this event, so a save that narrows the allowlist must publish it.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['b'] })
   assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 1)
 
   // Re-saving the same set changes nothing exposed: no extra event.
-  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['b'] })
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['b'] })
   assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 1)
 
-  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: [] })
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: [] })
   assert.equal(ctx.emitted.filter((event) => event === 'llm/adapters-updated').length, afterStart + 2)
 })
 
@@ -366,7 +398,7 @@ test('discover reports gateway failures and a missing key instead of throwing', 
   assert.match((noKey.payload as { error: string }).error, /apiKey is required/)
 })
 
-test('saving prunes hidden ids the gateway no longer serves', async (t) => {
+test('the allowlist keeps an id the gateway no longer serves, harmlessly', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   __resetSettingsRoutes()
@@ -374,80 +406,119 @@ test('saving prunes hidden ids the gateway no longer serves', async (t) => {
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
   await settled()
 
-  // 'a' is served, 'ghost' is not: the page can only ever show live rows, so a
-  // stale id could never be seen or cleared again — it must not be stored.
-  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['a', 'ghost'] })
-  assert.deepEqual((saved.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['a'])
+  // 'ghost' is not in the directory. It is stored as submitted — the list is a
+  // statement of intent, and silently dropping an entry would be a delete the
+  // user never asked for — but it can never appear as a row or be offered.
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['a', 'ghost'] })
+  assert.deepEqual((saved.payload as { value: { enabledModels?: string[] } }).value.enabledModels, ['a', 'ghost'])
 
-  const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')
-  assert.deepEqual((settings.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['a'])
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const rows = (listed.payload as { value: { models: Array<{ id: string; enabled: boolean; source: string }> } }).value.models
+  assert.deepEqual(rows.map((row) => row.id), ['a', 'b'], 'only directory ids get rows')
+  assert.equal(rows.find((row) => row.id === 'a')?.enabled, true)
+  assert.equal(rows.find((row) => row.id === 'b')?.enabled, false)
+  assert.equal(rows.find((row) => row.id === 'a')?.source, 'gateway')
 })
 
-test('pruning keeps the submitted set when the directory is still empty', async (t) => {
-  // An unreachable gateway must not silently wipe the user's hidden set: with
-  // nothing to prune against, the submitted ids are stored as-is.
-  __resetSettingsRoutes()
-  const ctx = stubContext()
-  apply(ctx, { baseUrl: 'http://127.0.0.1:1', apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
-  await settled()
-
-  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: ['kept', 'also-kept'] })
-  assert.deepEqual((saved.payload as { value: { hiddenModels: string[] } }).value.hiddenModels, ['kept', 'also-kept'])
-})
-
-test('overlapping generations share routes and serve the newest backend', async (t) => {
-  const { server, origin } = await withServer(gatewayBody)
-  t.after(() => server.close())
-  __resetSettingsRoutes()
-  const first = stubContext()
-  apply(first, { baseUrl: origin, apiKey: 'key-one', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
-  // Second generation overlaps the first (hot reload): no throw, routes shared.
-  const second = stubContext()
-  apply(second, { baseUrl: origin, apiKey: 'key-two', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
-  await settled()
-
-  // The second generation registered nothing into its own stub, but the shared
-  // routes answer with the newest backend.
-  assert.equal(second.routes.length, 0)
-  const settings = await callRoute(first.routes, SETTINGS_API, 'GET')
-  assert.equal((settings.payload as { value: { apiKey: string } }).value.apiKey, 'key-two')
-})
-
-test('every endpoint registers exactly one route per path (POST is never lost)', async (t) => {
+test('the models list flags each row with its allowlist state and source', async (t) => {
   const { server, origin } = await withServer(gatewayBody)
   t.after(() => server.close())
   __resetSettingsRoutes()
   const ctx = stubContext()
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
   await settled()
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['b'] })
 
-  // The connection registry keys routes by path, so a second entry for the
-  // same path is dropped — which silently killed POST /api/magpie-settings
-  // (the save button) while GET kept working.
-  const paths = ctx.routes.map((route) => route.path)
-  assert.deepEqual([...new Set(paths)], paths, `each path registers once: ${paths.join(', ')}`)
-
-  const settings = ctx.routes.find((route) => route.path === SETTINGS_API)
-  assert.ok(settings, 'settings route registered')
-  assert.deepEqual([...settings.methods].sort(), ['GET', 'POST'])
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const rows = (listed.payload as { value: { models: Array<{ id: string; enabled: boolean; source: string }> } }).value.models
+  assert.deepEqual(rows.map((entry) => [entry.id, entry.enabled, entry.source]), [
+    ['a', false, 'gateway'],
+    ['b', true, 'gateway'],
+  ])
 })
 
-test('a key-guarded gateway fills the picker on the very first catalog refresh', async (t) => {
-  // Regression: the refresh used to be sent without the key, so a gateway that
-  // guards GET /models answered 401 and the list stayed on the compile-time
-  // static snapshot — the AMD models the gateway serves were never listed.
-  const { server, origin } = await withKeyedServer(gatewayBody, 'test-key')
+test('the allowlist survives a gateway that drops and later re-lists a model', async (t) => {
+  // The original bug, end to end. Three zcode models are allowed; the gateway
+  // then drops two; a fetch+apply for an unrelated model must not hand them
+  // back when the lane returns, because only an explicit add can do that.
+  const zcode = ['zcode/GLM-5.3-Flash', 'zcode/DeepSeek-V3', 'zcode/GLM-4.6']
+  const { server, origin, serve } = await withMutableServer([...zcode, 'qoder/qfmodel'])
   t.after(() => server.close())
   __resetSettingsRoutes()
   const ctx = stubContext()
   apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
   await settled()
 
-  const models = await callRoute(ctx.routes, MODELS_API, 'GET')
-  const value = (models.payload as { value: { models: Array<{ id: string }>; snapshot: { status: string; lastRefresh?: string } } }).value
-  assert.deepEqual(value.models.map((row) => row.id), ['a', 'b'])
-  assert.equal(value.snapshot.status, 'ready')
-  assert.ok(value.snapshot.lastRefresh, 'the live directory was actually read')
+  // The user removes all three zcode rows from the list.
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['qoder/qfmodel'] })
+  let rows = ((await callRoute(ctx.routes, MODELS_API, 'GET')).payload as { value: { models: Array<{ id: string; enabled: boolean }> } }).value.models
+  assert.deepEqual(rows.filter((row) => row.enabled).map((row) => row.id), ['qoder/qfmodel'])
+
+  // The gateway stops listing two of them.
+  serve(['zcode/GLM-5.3-Flash', 'qoder/qfmodel'])
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  const candidates = (found.payload as { value: { models: CandidateRow[] } }).value.models
+  assert.deepEqual(candidates.map((row) => row.id).sort(), ['qoder/qfmodel', 'zcode/GLM-5.3-Flash'])
+
+  // The dialog pre-ticks what is offered, so Apply keeps exactly that.
+  const picked = new Set(['qoder/qfmodel'])
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: enabledAfterAdopt(candidates, picked) })
+  rows = ((await callRoute(ctx.routes, MODELS_API, 'GET')).payload as { value: { models: Array<{ id: string; enabled: boolean }> } }).value.models
+  assert.deepEqual(rows.filter((row) => row.enabled).map((row) => row.id), ['qoder/qfmodel'])
+
+  // The lane returns in full, plus a model the user never saw. Nothing is
+  // offered that the user did not declare.
+  serve([...zcode, 'qoder/qfmodel', 'kiro/deepseek-3.2'])
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  rows = ((await callRoute(ctx.routes, MODELS_API, 'GET')).payload as { value: { models: Array<{ id: string; enabled: boolean }> } }).value.models
+  assert.deepEqual(rows.filter((row) => row.enabled).map((row) => row.id), ['qoder/qfmodel'])
+  assert.deepEqual(rows.map((row) => row.id).sort(), ['kiro/deepseek-3.2', 'qoder/qfmodel', ...zcode].sort())
+})
+
+test('fetching available models drops models the gateway no longer lists', async (t) => {
+  // The user's scenario: the local directory holds zcode/a,b,c, the gateway now
+  // serves only zcode/a. Opening the dialog shows only zcode/a — and the list
+  // must agree immediately, without waiting for a background refresh (which on
+  // a key-guarded gateway used to fail silently and keep b/c forever).
+  const { server, origin, serve } = await withMutableServer(['zcode/a', 'zcode/b', 'zcode/c', 'qoder/qfmodel'])
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  let listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  let rows = (listed.payload as { value: { models: Array<{ id: string }> } }).value.models
+  assert.deepEqual(rows.map((row) => row.id).sort(), ['qoder/qfmodel', 'zcode/a', 'zcode/b', 'zcode/c'])
+
+  serve(['zcode/a'])
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  const candidates = (found.payload as { value: { models: CandidateRow[] } }).value.models
+  assert.deepEqual(candidates.map((row) => row.id), ['zcode/a'])
+
+  // No Apply needed: the fetch itself adopted the gateway's directory, so the
+  // list can no longer show models the dialog does not offer.
+  listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  rows = (listed.payload as { value: { models: Array<{ id: string }> } }).value.models
+  assert.deepEqual(rows.map((row) => row.id), ['zcode/a'])
+})
+
+test('a failed fetch leaves the local directory intact', async (t) => {
+  // A bad endpoint must not be read as "the gateway serves nothing": the
+  // directory would blank the picker.
+  const { server, origin } = await withMutableServer(['zcode/a', 'zcode/b'])
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const failed = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: 'http://127.0.0.1:1', apiKey: 'test-key' })
+  assert.equal((failed.payload as { ok: boolean }).ok, false)
+
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const rows = (listed.payload as { value: { models: Array<{ id: string }> } }).value.models
+  assert.deepEqual(rows.map((row) => row.id), ['zcode/a', 'zcode/b'])
 })
 
 test('adopting a model the dialog just fetched makes it appear in the list', async (t) => {
@@ -468,13 +539,13 @@ test('adopting a model the dialog just fetched makes it appear in the list', asy
   assert.ok(candidates.includes('amd/GLM-5.3-Flash'), 'the dialog lists the AMD model')
 
   // Tick everything and adopt: the hidden set is empty, so every candidate is on.
-  await callRoute(ctx.routes, SETTINGS_API, 'POST', { hiddenModels: [] })
+  await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: [] })
 
   const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
-  const rows = (listed.payload as { value: { models: Array<{ id: string; hidden: boolean }> } }).value.models
+  const rows = (listed.payload as { value: { models: Array<{ id: string; enabled: boolean }> } }).value.models
   const amd = rows.find((row) => row.id === 'amd/GLM-5.3-Flash')
   assert.ok(amd, 'the adopted AMD model has a row in the list')
-  assert.equal(amd?.hidden, false)
+  assert.equal(amd?.enabled, false)
 })
 
 test('a key-only save re-reads the directory before the page reloads its rows', async (t) => {

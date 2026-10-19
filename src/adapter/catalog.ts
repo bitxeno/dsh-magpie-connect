@@ -240,7 +240,13 @@ const FETCH_TIMEOUT_MS = 30_000
 /** Live model directory with refresh loop. All state in-memory; only the gateway snapshot persists. */
 export class ModelCatalog {
   #entries: Map<string, MagpieModelEntry> = new Map()
-  #hidden: Set<string> = new Set()
+  /**
+   * Allowlist of model ids the picker offers. `null` = inherit the whole
+   * directory (the default, and what a fresh install gets); a Set (possibly
+   * empty) = exactly these ids. Mirrors DSH's own Models settings, where a
+   * provider's `models` array replaces the catalog instead of filtering it.
+   */
+  #enabled: Set<string> | null = null
   #updatedAt = 0
   #lastError = ''
   #refreshSeconds: number
@@ -369,6 +375,32 @@ export class ModelCatalog {
     return this.#apiKey === '' ? {} : { authorization: `Bearer ${this.#apiKey}` }
   }
 
+  /**
+   * Adopt a directory the settings page just read from the gateway.
+   *
+   * The fetch dialog asks the endpoint the form shows and gets the freshest
+   * answer the session will see; the background refresh loop may be minutes
+   * behind, or silently failing on a 401. Without this, a model the gateway has
+   * dropped stays in the local directory — and therefore in the picker and the
+   * settings list — until the next *successful* refresh, which may never come.
+   *
+   * Whole-set replacement, never a merge: the reply is the gateway's entire
+   * catalog, so anything it no longer lists is gone. Empty input is refused
+   * rather than treated as "nothing served", because a bad endpoint or a
+   * transient failure must not blank the picker.
+   * @param entries - the decoded gateway directory just fetched.
+   * @returns whether the directory was adopted.
+   */
+  adoptDirectory(entries: Map<string, MagpieModelEntry>): boolean {
+    if (entries.size === 0) return false
+    this.#entries = new Map(entries)
+    this.#updatedAt = this.#now()
+    this.#lastError = ''
+    if (this.#cachePath) void saveModelsCache(this.#cachePath, entries, this.#now()).catch(() => {})
+    this.#announce()
+    return true
+  }
+
   async refreshModels(): Promise<void> {
     if (!this.configured) {
       this.#lastError = 'magpie gateway API URL or key is not configured — set both on the Magpie settings page'
@@ -399,40 +431,49 @@ export class ModelCatalog {
   }
 
   /**
-   * Replace the settings-page hidden set (models excluded from the picker).
-   * Announces: hiding/showing models changes the exposed list, and DSH's
-   * picker only re-reads it on `llm/adapters-updated`.
+   * Replace the settings-page allowlist (`null` = inherit the whole directory).
+   * Announces: the exposed set changes, and DSH's picker only re-reads it on
+   * `llm/adapters-updated`.
+   * @param ids - the allowed model ids, or `null` to inherit.
    */
-  setHidden(ids: readonly string[]): void {
-    const next = new Set(ids)
-    if (next.size === this.#hidden.size && [...next].every((id) => this.#hidden.has(id))) return
-    this.#hidden = next
+  setEnabled(ids: readonly string[] | null): void {
+    const next = ids === null ? null : new Set(ids)
+    if (this.#sameSet(next)) return
+    this.#enabled = next
     this.#announce()
   }
 
-  /** Currently hidden model ids. */
-  hidden(): string[] {
-    return [...this.#hidden]
+  /** The allowlist as stored: `null` when inheriting. */
+  enabled(): string[] | null {
+    return this.#enabled === null ? null : [...this.#enabled]
+  }
+
+  #sameSet(next: Set<string> | null): boolean {
+    const current = this.#enabled
+    if (next === null || current === null) return next === current
+    return next.size === current.size && [...next].every((id) => current.has(id))
+  }
+
+  /** Whether the picker offers one id under the current allowlist. */
+  #offers(model: string): boolean {
+    return this.#enabled === null || this.#enabled.has(model)
   }
 
   /**
-   * Drop hidden ids the gateway no longer serves.
-   *
-   * The hidden set is only meaningful against a live directory: keeping an id
-   * that has since left `GET /models` would make the settings page carry rows
-   * nobody can act on, and a model that later returns would come back
-   * invisibly hidden for no reason the user can see. Called on save, when the
-   * directory is the freshest the session has.
-   * @param ids - the hidden set as submitted.
-   * @returns the subset still worth storing.
+   * Where one model id comes from right now: the live directory, the built-in
+   * snapshot, or nothing. The settings page labels its rows with this so a
+   * model the gateway stopped listing is not mistaken for one it still serves.
+   * @param model - the id to classify.
+   * @returns `'gateway'`, `'static'`, or `'none'`.
    */
-  pruneHidden(ids: readonly string[]): string[] {
-    if (!this.configured || this.#entries.size === 0) return [...ids]
-    return ids.filter((id) => this.#entries.has(id))
+  sourceFor(model: string): 'gateway' | 'static' | 'none' {
+    if (this.#entries.has(model)) return 'gateway'
+    if (this.configured && staticMagpieModels.some((entry) => entry.id === model)) return 'static'
+    return 'none'
   }
 
-  isHidden(model: string): boolean {
-    return this.#hidden.has(model)
+  isEnabled(model: string): boolean {
+    return this.#offers(model)
   }
 
   /**
@@ -480,7 +521,7 @@ export class ModelCatalog {
 
   decision(model: string): { allowed: boolean; source: string; known: boolean } {
     if (!this.configured) return { allowed: false, source: 'unconfigured', known: false }
-    if (this.#hidden.has(model)) return { allowed: false, source: 'hidden_by_settings', known: true }
+    if (!this.#offers(model)) return { allowed: false, source: 'not_enabled_by_settings', known: true }
     if (this.#entries.has(model)) return { allowed: true, source: 'gateway', known: true }
     const fallback = staticMagpieModels.find((entry) => entry.id === model)
     if (fallback) return { allowed: true, source: 'static_verified', known: false }
@@ -544,11 +585,24 @@ export class ModelCatalog {
     return this.#entryFor(model)?.maxTokens ?? 32768
   }
 
-  /** ids exposed to DSH: live gateway list minus hidden (empty while unconfigured). */
+  /**
+   * Every id the directory knows right now, ignoring the allowlist: the live
+   * gateway list, else the cached copy, else the built-in snapshot.
+   *
+   * This is what the settings page renders (each row then says whether the
+   * allowlist offers it) and what the one-time migration intersects against.
+   */
+  directory(): string[] {
+    if (!this.configured) return []
+    if (this.#entries.size === 0) return staticMagpieModels.map((entry) => entry.id)
+    return [...this.#entries.keys()].sort()
+  }
+
+  /** ids exposed to DSH: the directory filtered by the allowlist (empty while unconfigured). */
   list(): string[] {
     if (!this.configured) return []
-    if (this.#entries.size === 0) return staticMagpieModels.map((entry) => entry.id).filter((id) => !this.#hidden.has(id))
-    return [...this.#entries.keys()].filter((id) => !this.#hidden.has(id)).sort()
+    if (this.#entries.size === 0) return staticMagpieModels.map((entry) => entry.id).filter((id) => this.#offers(id))
+    return [...this.#entries.keys()].filter((id) => this.#offers(id)).sort()
   }
 
   /** Catalog health snapshot (pending/ready/stale + counts). */
