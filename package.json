@@ -1,7 +1,7 @@
 {
   "name": "dsh-magpie-connect",
   "description": "Magpie gateway models for DeepSeek Harness (DSH): native dsh-llm adapter plugin with image + responses + thinking levels.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "type": "module",
   "repository": {
