@@ -595,3 +595,31 @@ test('an unreachable gateway still lets a save answer (the refresh wait is bound
   assert.equal((saved.payload as { value: { apiKey: string } }).value.apiKey, 'test-key')
   assert.ok(Date.now() - started < 30_000, 'the save answered without waiting out the gateway')
 })
+
+test('startup warms the directory with the saved endpoint, not the defaults', async (t) => {
+  // Regression: warming the catalog before applying the persisted document
+  // pointed it at the patch/default endpoint. That fetch failed, the directory
+  // stayed empty, and the settings page rendered the built-in snapshot — four
+  // rows instead of the eight the user had saved.
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-boot-'))
+  const { writeFileSync } = await import('node:fs')
+  writeFileSync(
+    join(dir, 'settings.json'),
+    JSON.stringify({ baseUrl: origin, apiKey: 'saved-key', enabledModels: ['a'], migratedFromHiddenModels: true }),
+  )
+
+  const ctx = stubContext()
+  // The patch config points nowhere: only the persisted file knows the gateway.
+  apply(ctx, { baseUrl: 'http://127.0.0.1:1/v1', apiKey: '', refreshSeconds: 3600, dataDir: dir })
+  await settled(100)
+
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const value = (listed.payload as { value: { models: Array<{ id: string; source: string }>; snapshot: { status: string; total: number } } }).value
+  assert.deepEqual(value.models.map((row) => row.id), ['a', 'b'], 'the live directory was read')
+  assert.equal(value.models.every((row) => row.source === 'gateway'), true)
+  assert.equal(value.snapshot.status, 'ready')
+  assert.equal(value.snapshot.total, 2)
+})

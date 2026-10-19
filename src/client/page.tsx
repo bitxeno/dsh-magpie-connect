@@ -113,25 +113,42 @@ export function MagpieSettings(): unknown {
 
   useEffect(() => {
     let alive = true
-    Promise.all([request('/api/magpie-settings'), request('/api/magpie-models')]).then(
-      ([settingsValue, modelsValue]) => {
-        if (!alive) return
-        const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
-        const listed = (modelsValue as { models: ModelRow[] }).models ?? []
-        setBaseUrl(settings.baseUrl ?? '')
-        setApiKey(settings.apiKey ?? '')
-        setEnabled(settings.enabledModels)
-        setModels(listed)
-        setLoaded(true)
-      },
-      (cause: unknown) => {
-        if (!alive) return
-        setError(text('loadFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
-        setLoaded(true)
-      },
-    )
+    let retry: ReturnType<typeof setTimeout> | undefined
+    /** Bound the retries: a gateway that stays down is a status line, not a spin. */
+    let attempts = 0
+
+    const load = async (): Promise<void> => {
+      const [settingsValue, modelsValue] = await Promise.all([
+        request('/api/magpie-settings'),
+        request('/api/magpie-models'),
+      ])
+      if (!alive) return
+      const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
+      const listed = (modelsValue as { models: ModelRow[] }).models ?? []
+      const snapshot = (modelsValue as { snapshot?: { status?: string } }).snapshot
+      setBaseUrl(settings.baseUrl ?? '')
+      setApiKey(settings.apiKey ?? '')
+      setEnabled(settings.enabledModels)
+      setModels(listed)
+      setLoaded(true)
+      // The Host answers before its catalog has warmed up, and the first paint
+      // would otherwise freeze on the built-in snapshot — a short list that
+      // looks like the user's saved models were lost. Re-read until the live
+      // directory has landed.
+      if (snapshot?.status === 'pending' && attempts < 20) {
+        attempts += 1
+        retry = setTimeout(() => void load().catch(() => {}), 1000)
+      }
+    }
+
+    void load().catch((cause: unknown) => {
+      if (!alive) return
+      setError(text('loadFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+      setLoaded(true)
+    })
     return () => {
       alive = false
+      if (retry !== undefined) clearTimeout(retry)
     }
   }, [])
 

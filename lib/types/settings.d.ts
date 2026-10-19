@@ -91,10 +91,19 @@ export declare class SettingsStore {
         path?: string;
     });
     /**
-     * Load persisted settings (missing/corrupt file reads as empty, never throws).
+     * Read and normalize the persisted document (missing/corrupt reads as empty,
+     * never throws). Does not touch memory or disk.
      *
-     * Also runs the one-time `hiddenModels` -> `enabledModels` conversion. The
-     * rewrite is attempted at startup rather than lazily so the file on disk
+     * Separate from {@link load} because the legacy conversion needs the gateway
+     * directory, and that can only be read once the persisted endpoint is known:
+     * the process starts with the patch/default endpoint, not the user's.
+     */
+    read(): Promise<MagpiePageSettings>;
+    /**
+     * Load persisted settings, running the one-time `hiddenModels` ->
+     * `enabledModels` conversion.
+     *
+     * The rewrite is attempted at startup rather than lazily so the file on disk
      * matches what the running process believes; a failed write is not fatal
      * (the in-memory result is still correct), and the migration marker makes a
      * retry idempotent.
@@ -102,6 +111,17 @@ export declare class SettingsStore {
      *   compute the allowlist; omitted when the directory is not known yet.
      */
     load(known?: readonly string[]): Promise<MagpiePageSettings>;
+    /**
+     * Adopt a document already read and normalized by {@link read}, then run the
+     * legacy conversion against the directory that is now warm.
+     *
+     * This is the startup path: `read` -> `applyPageSettings` (so the catalog
+     * knows the user's endpoint) -> `catalog.start` (so the directory is real) ->
+     * `hydrate` (so a legacy file converts against the live gateway).
+     * @param raw - the normalized document from {@link read}.
+     * @param known - ids the old blacklist rules would have offered.
+     */
+    hydrate(raw: MagpiePageSettings, known?: readonly string[]): Promise<MagpiePageSettings>;
     get(): MagpiePageSettings;
     /** Merge a partial payload, persist, and notify listeners. */
     save(partial: unknown): Promise<MagpiePageSettings>;

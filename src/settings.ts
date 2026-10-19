@@ -179,10 +179,28 @@ export class SettingsStore {
   }
 
   /**
-   * Load persisted settings (missing/corrupt file reads as empty, never throws).
+   * Read and normalize the persisted document (missing/corrupt reads as empty,
+   * never throws). Does not touch memory or disk.
    *
-   * Also runs the one-time `hiddenModels` -> `enabledModels` conversion. The
-   * rewrite is attempted at startup rather than lazily so the file on disk
+   * Separate from {@link load} because the legacy conversion needs the gateway
+   * directory, and that can only be read once the persisted endpoint is known:
+   * the process starts with the patch/default endpoint, not the user's.
+   */
+  async read(): Promise<MagpiePageSettings> {
+    if (!this.#path) return {}
+    try {
+      const raw = JSON.parse(await readFile(this.#path, 'utf8')) as unknown
+      return normalizePageSettings(raw)
+    } catch {
+      return {}
+    }
+  }
+
+  /**
+   * Load persisted settings, running the one-time `hiddenModels` ->
+   * `enabledModels` conversion.
+   *
+   * The rewrite is attempted at startup rather than lazily so the file on disk
    * matches what the running process believes; a failed write is not fatal
    * (the in-memory result is still correct), and the migration marker makes a
    * retry idempotent.
@@ -201,6 +219,24 @@ export class SettingsStore {
     const { settings, migrated } = migrateLegacySettings(raw, known)
     this.#settings = settings
     if (migrated) await this.persist().catch(() => {})
+    return this.get()
+  }
+
+  /**
+   * Adopt a document already read and normalized by {@link read}, then run the
+   * legacy conversion against the directory that is now warm.
+   *
+   * This is the startup path: `read` -> `applyPageSettings` (so the catalog
+   * knows the user's endpoint) -> `catalog.start` (so the directory is real) ->
+   * `hydrate` (so a legacy file converts against the live gateway).
+   * @param raw - the normalized document from {@link read}.
+   * @param known - ids the old blacklist rules would have offered.
+   */
+  async hydrate(raw: MagpiePageSettings, known?: readonly string[]): Promise<MagpiePageSettings> {
+    const { settings, migrated } = migrateLegacySettings(raw, known)
+    this.#settings = settings
+    if (migrated) await this.persist().catch(() => {})
+    this.#emit()
     return this.get()
   }
 

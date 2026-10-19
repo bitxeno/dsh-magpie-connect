@@ -554,15 +554,25 @@ export function apply(
   ctx.llm.registerAdapter([cfg.providerId], adapter)
   logger.info(`dsh-magpie-connect: adapter registered for "${cfg.providerId}" (catalog warms up in background)`)
   void (async () => {
-    // Order matters for the one-time migration: `enabledModels` can only be
-    // computed from the ids the old blacklist rules would have offered, so the
-    // directory has to be warm before the settings document is converted.
-    // Warming it first also means a legacy file converts against the live
-    // gateway rather than against nothing.
+    // Startup order is load-bearing in both directions:
+    //
+    // 1. read the document first — until it is applied, the catalog is pointed
+    //    at the patch/default endpoint, not the user's, so any fetch it does
+    //    now fails and leaves the directory empty;
+    // 2. apply it, so the catalog knows the real endpoint before it warms up;
+    // 3. warm the directory;
+    // 4. only then run the legacy conversion, which needs the ids the gateway
+    //    actually serves.
+    //
+    // Doing 3 before 2 was a regression: the warm-up hit the default endpoint,
+    // failed, and the settings page fell back to the built-in snapshot.
+    const persisted = await store.read()
+    await store.hydrate(persisted, undefined)
+    applyPageSettings()
     await catalog.start().catch((err) => {
       logger.error(`dsh-magpie-connect: catalog start failed: ${err instanceof Error ? err.message : String(err)}`)
     })
-    await store.load(catalog.directory())
+    await store.hydrate(persisted, catalog.directory())
     applyPageSettings()
   })().catch((err) => {
     logger.error(`dsh-magpie-connect: startup failed: ${err instanceof Error ? err.message : String(err)}`)
