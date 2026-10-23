@@ -60,7 +60,7 @@ export interface MagpieModelInfo {
 export interface CatalogLike {
   list(): string[]
   decision(model: string): { allowed: boolean; source: string; known: boolean }
-  getEntry?(model: string): { nativeEndpoints: string[] } | undefined
+  getEntry?(model: string): { nativeEndpoints: string[]; displayName?: string } | undefined
   reasoningFor?(model: string): { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort: string } | undefined
   thinks?(model: string): boolean
   supportsImage?(model: string): boolean
@@ -289,6 +289,15 @@ export class MagpieAdapter {
     return undefined
   }
 
+  /**
+   * Picker label: the gateway's display_name ("Claude Haiku 5.5"), else the id. The id itself stays
+   * the route id (`claude/claude-haiku-5-5`) for requests and session history.
+   */
+  #labelFor(id: string): string {
+    const label = this.#catalog.getEntry?.(id)?.displayName
+    return typeof label === 'string' && label.trim() !== '' ? label : id
+  }
+
   /** Advisory catalog for the DSH model picker (deduped; dsh-llm rejects duplicates). */
   listModels(provider: string): Array<{ provider: string; id: string; name: string; inputModalities: string[] }> {
     const seen = new Set<string>()
@@ -297,7 +306,7 @@ export class MagpieAdapter {
       if (seen.has(id)) continue
       seen.add(id)
       const image = this.#catalog.supportsImage?.(id) ?? false
-      models.push({ provider, id, name: id, inputModalities: image ? ['text', 'image'] : ['text'] })
+      models.push({ provider, id, name: this.#labelFor(id), inputModalities: image ? ['text', 'image'] : ['text'] })
     }
     return models
   }
@@ -327,7 +336,7 @@ export class MagpieAdapter {
     return {
       provider,
       id: model,
-      name: model,
+      name: this.#labelFor(model),
       inputModalities: image ? ['text', 'image'] : ['text'],
       context: { contextWindow: this.#catalog.contextWindowFor?.(model) ?? DEFAULT_CONTEXT_WINDOW },
       defaultMaxTokens: this.#catalog.maxTokensFor?.(model) ?? DEFAULT_MAX_TOKENS,
