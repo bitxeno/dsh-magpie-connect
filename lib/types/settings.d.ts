@@ -28,6 +28,12 @@ export interface MagpiePageSettings {
      */
     migratedFromHiddenModels?: true;
 }
+export interface MagpieSettingsView {
+    baseUrl: string;
+    hasApiKey: boolean;
+    enabledModels?: string[];
+    inheritedModels: boolean;
+}
 export interface EffectiveEndpoint {
     baseUrl: string;
     apiKey: string;
@@ -92,7 +98,7 @@ export declare class SettingsStore {
     });
     /**
      * Read and normalize the persisted document (missing/corrupt reads as empty,
-     * never throws). Does not touch memory or disk.
+     * never throws). Repairs permissions without changing stored settings.
      *
      * Separate from {@link load} because the legacy conversion needs the gateway
      * directory, and that can only be read once the persisted endpoint is known:

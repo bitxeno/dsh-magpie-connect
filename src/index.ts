@@ -13,6 +13,7 @@ import type { AttachmentStore } from './adapter/messages.ts'
 import { resolveConfig, type DshMagpieConnectConfig } from './config.ts'
 import {
   SettingsStore,
+  type MagpieSettingsView,
   defaultSettingsPath,
   isConfigured,
   normalizeBaseUrl,
@@ -206,19 +207,20 @@ interface RouteDefinition {
   fetch: (request: Request) => Promise<Response>
 }
 
+function settingsView(backend: SettingsBackend): MagpieSettingsView {
+  const page = backend.store.get()
+  const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
+  return {
+    baseUrl: endpoint.baseUrl,
+    hasApiKey: endpoint.apiKey !== '',
+    enabledModels: page.enabledModels,
+    inheritedModels: page.enabledModels === undefined,
+  }
+}
+
 async function handleSettingsGet(): Promise<Response> {
   try {
-    const backend = backendOrThrow()
-    const page = backend.store.get()
-    const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
-    return routeOk({
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      enabledModels: page.enabledModels,
-      inheritedModels: page.enabledModels === undefined,
-      fromPage: page,
-      fromPatch: backend.patchEndpoint,
-    })
+    return routeOk(settingsView(backendOrThrow()))
   } catch (error) {
     return routeFail(error)
   }
@@ -234,7 +236,7 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     // models come and go between refreshes, so the two ids removed while the
     // gateway happened to be un-listing them would be forgotten, then reappear
     // in the picker on the next refresh that listed them again.
-    const saved = await backend.store.save(normalized)
+    await backend.store.save(normalized)
     backend.applyPageSettings()
     // A save can move the endpoint (or just the key), so re-read the directory
     // before answering: the page re-reads rows right after this response, and a
@@ -250,13 +252,7 @@ async function handleSettingsPost(request: Request): Promise<Response> {
         new Promise((resolve) => setTimeout(resolve, SAVE_REFRESH_WAIT_MS)),
       ])
     }
-    const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, saved)
-    return routeOk({
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      enabledModels: saved.enabledModels,
-      inheritedModels: saved.enabledModels === undefined,
-    })
+    return routeOk(settingsView(backend))
   } catch (error) {
     return routeFail(error)
   }

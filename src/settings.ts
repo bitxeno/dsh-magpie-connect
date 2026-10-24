@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
+import { chmod, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 /**
@@ -31,6 +32,13 @@ export interface MagpiePageSettings {
    * blacklist and invert it into nonsense.
    */
   migratedFromHiddenModels?: true
+}
+
+export interface MagpieSettingsView {
+  baseUrl: string
+  hasApiKey: boolean
+  enabledModels?: string[]
+  inheritedModels: boolean
 }
 
 export interface EffectiveEndpoint {
@@ -180,7 +188,7 @@ export class SettingsStore {
 
   /**
    * Read and normalize the persisted document (missing/corrupt reads as empty,
-   * never throws). Does not touch memory or disk.
+   * never throws). Repairs permissions without changing stored settings.
    *
    * Separate from {@link load} because the legacy conversion needs the gateway
    * directory, and that can only be read once the persisted endpoint is known:
@@ -189,7 +197,7 @@ export class SettingsStore {
   async read(): Promise<MagpiePageSettings> {
     if (!this.#path) return {}
     try {
-      const raw = JSON.parse(await readFile(this.#path, 'utf8')) as unknown
+      const raw = await this.#readDocument(this.#path)
       return normalizePageSettings(raw)
     } catch {
       return {}
@@ -211,7 +219,7 @@ export class SettingsStore {
     if (!this.#path) return this.get()
     let raw: unknown
     try {
-      raw = JSON.parse(await readFile(this.#path, 'utf8'))
+      raw = await this.#readDocument(this.#path)
     } catch {
       this.#settings = {}
       return this.get()
@@ -266,13 +274,24 @@ export class SettingsStore {
     }
   }
 
+  async #readDocument(path: string): Promise<unknown> {
+    await chmod(dirname(path), 0o700)
+    await chmod(path, 0o600)
+    return JSON.parse(await readFile(path, 'utf8'))
+  }
+
   async persist(): Promise<void> {
     if (!this.#path) return
-    const tmp = `${this.#path}.${process.pid}.tmp`
-    await mkdir(dirname(this.#path), { recursive: true })
-    await writeFile(tmp, JSON.stringify(this.#settings, null, 2), 'utf8')
-    await rm(this.#path, { force: true })
-    await rename(tmp, this.#path)
+    const path = this.#path
+    const tmp = `${path}.${randomUUID()}.tmp`
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    await chmod(dirname(path), 0o700)
+    try {
+      await writeFile(tmp, JSON.stringify(this.#settings, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      await rename(tmp, path)
+    } finally {
+      await rm(tmp, { force: true })
+    }
   }
 
   #emit(): void {
