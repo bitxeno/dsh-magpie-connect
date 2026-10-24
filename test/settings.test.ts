@@ -263,3 +263,37 @@ test('load() rewrites a legacy file on disk exactly once', async () => {
   const again = new SettingsStore({ path })
   assert.deepEqual((await again.load(['a', 'b', 'c'])).enabledModels, ['a', 'c'])
 })
+
+test('credential files stay private under a permissive umask and repeated saves', { skip: process.platform === 'win32' }, async () => {
+  const { stat, chmod, readFile } = await import('node:fs/promises')
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-private-'))
+  const path = join(dir, 'state', 'settings.json')
+  const previous = process.umask(0o022)
+  try {
+    const store = new SettingsStore({ path })
+    await store.save({ apiKey: 'private-gateway-key' })
+    assert.equal((await stat(join(dir, 'state'))).mode & 0o777, 0o700)
+    assert.equal((await stat(path)).mode & 0o777, 0o600)
+    await chmod(path, 0o600)
+    await store.save({ enabledModels: ['a'] })
+    assert.equal((await stat(path)).mode & 0o777, 0o600)
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).apiKey, 'private-gateway-key')
+  } finally {
+    process.umask(previous)
+  }
+})
+
+test('reading existing settings repairs legacy credential permissions', { skip: process.platform === 'win32' }, async () => {
+  const { chmod, stat, writeFile } = await import('node:fs/promises')
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-legacy-private-'))
+  const path = join(dir, 'settings.json')
+  await writeFile(path, JSON.stringify({ apiKey: 'legacy-private-key' }))
+  for (const operation of ['read', 'load'] as const) {
+    await chmod(dir, 0o755)
+    await chmod(path, 0o644)
+    const store = new SettingsStore({ path })
+    assert.equal((await store[operation]()).apiKey, 'legacy-private-key')
+    assert.equal((await stat(dir)).mode & 0o777, 0o700)
+    assert.equal((await stat(path)).mode & 0o777, 0o600)
+  }
+})

@@ -3,6 +3,7 @@ import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { createWriteQueue } from './write-queue.ts'
+import type { MagpieSettingsView } from '../settings.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
@@ -82,6 +83,7 @@ export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [hasApiKey, setHasApiKey] = useState(false)
   /** `undefined` = inherit the gateway directory; an array = exactly those ids. */
   const [enabled, setEnabled] = useState<string[] | undefined>(undefined)
   const [models, setModels] = useState<ModelRow[]>([])
@@ -123,11 +125,11 @@ export function MagpieSettings(): unknown {
         request('/api/magpie-models'),
       ])
       if (!alive) return
-      const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
+      const settings = settingsValue as MagpieSettingsView
       const listed = (modelsValue as { models: ModelRow[] }).models ?? []
       const snapshot = (modelsValue as { snapshot?: { status?: string } }).snapshot
       setBaseUrl(settings.baseUrl ?? '')
-      setApiKey(settings.apiKey ?? '')
+      setHasApiKey(settings.hasApiKey)
       setEnabled(settings.enabledModels)
       setModels(listed)
       setLoaded(true)
@@ -153,7 +155,7 @@ export function MagpieSettings(): unknown {
   }, [])
 
   const fetchCandidates = async (): Promise<readonly CandidateRow[]> => {
-    const result = (await request('/api/magpie-discover', 'POST', { baseUrl, apiKey })) as { models: CandidateRow[] }
+    const result = (await request('/api/magpie-discover', 'POST', { baseUrl, ...(apiKey.trim() === '' ? {} : { apiKey }) })) as { models: CandidateRow[] }
     return result.models ?? []
   }
 
@@ -190,15 +192,12 @@ export function MagpieSettings(): unknown {
     try {
       const saved = (await request('/api/magpie-settings', 'POST', {
         baseUrl,
-        apiKey,
+        ...(apiKey.trim() === '' ? {} : { apiKey }),
         ...(enabled === undefined ? {} : { enabledModels: enabled }),
-      })) as {
-        baseUrl: string
-        apiKey: string
-        enabledModels?: string[]
-      }
+      })) as MagpieSettingsView
       setBaseUrl(saved.baseUrl)
-      setApiKey(saved.apiKey)
+      setHasApiKey(saved.hasApiKey)
+      setApiKey('')
       // Adopt what the server stored, without queueing a write of its own —
       // that would be a pointless echo of what just landed. The set comes back
       // as submitted: the store no longer drops ids the directory omits.
@@ -219,7 +218,7 @@ export function MagpieSettings(): unknown {
     setError(undefined)
     setNotice(undefined)
     try {
-      const result = (await request('/api/magpie-test', 'POST', { baseUrl, apiKey })) as { count: number }
+      const result = (await request('/api/magpie-test', 'POST', { baseUrl, ...(apiKey.trim() === '' ? {} : { apiKey }) })) as { count: number }
       setNotice(text('testOk', { count: result.count }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -229,7 +228,7 @@ export function MagpieSettings(): unknown {
   }
 
   const working = busy !== 'idle'
-  const incomplete = baseUrl.trim() === '' || apiKey.trim() === ''
+  const incomplete = baseUrl.trim() === '' || (!hasApiKey && apiKey.trim() === '')
 
   return (
     <section style={css.section}>
@@ -245,7 +244,7 @@ export function MagpieSettings(): unknown {
         </div>
         <div style={css.field}>
           <span style={css.label}>{text('apiKey')}</span>
-          <Input type="password" value={apiKey} placeholder={text('apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => setApiKey(event.currentTarget.value)} />
+          <Input type="password" value={apiKey} placeholder={text(hasApiKey ? 'apiKeySavedPlaceholder' : 'apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => setApiKey(event.currentTarget.value)} />
         </div>
         <div style={css.row}>
           <Button variant="primary" disabled={working || incomplete} onClick={() => void save()}>

@@ -1,7 +1,7 @@
 lockfileVersion: '9.0'
 
 settings:
-  autoInstallPeers: true
+  autoInstallPeers: false
   excludeLinksFromLockfile: false
 
 importers:
@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: ^0.82.1
-        version: 0.82.1(ws@8.22.0)(zod@4.6.5)
+        version: 0.82.1(ws@8.22.0)(zod@4.6.7)
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -561,16 +561,16 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.91.1(zod@4.6.5)':
+  '@anthropic-ai/sdk@0.91.1(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
     optionalDependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
   '@aws-crypto/sha256-browser@5.2.0':
     dependencies:
@@ -788,9 +788,9 @@ snapshots:
 
   '@babel/runtime@7.29.7': {}
 
-  '@earendil-works/pi-ai@0.82.1(ws@8.22.0)(zod@4.6.5)':
+  '@earendil-works/pi-ai@0.82.1(ws@8.22.0)(zod@4.6.7)':
     dependencies:
-      '@anthropic-ai/sdk': 0.91.1(zod@4.6.5)
+      '@anthropic-ai/sdk': 0.91.1(zod@4.6.7)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
       '@google/genai': 1.52.0
       '@mistralai/mistralai': 2.2.6(@opentelemetry/api@1.9.0)
@@ -798,7 +798,7 @@ snapshots:
       '@smithy/node-http-handler': 4.7.3
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
-      openai: 6.26.0(ws@8.22.0)(zod@4.6.5)
+      openai: 6.26.0(ws@8.22.0)(zod@4.6.7)
       partial-json: 0.1.7
       typebox: 1.1.38
     transitivePeerDependencies:
@@ -902,8 +902,8 @@ snapshots:
     dependencies:
       '@opentelemetry/semantic-conventions': 1.43.0
       ws: 8.22.0
-      zod: 4.6.5
-      zod-to-json-schema: 3.25.2(zod@4.6.5)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     optionalDependencies:
       '@opentelemetry/api': 1.9.0
     transitivePeerDependencies:
@@ -1128,10 +1128,10 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
-  openai@6.26.0(ws@8.22.0)(zod@4.6.5):
+  openai@6.26.0(ws@8.22.0)(zod@4.6.7):
     optionalDependencies:
       ws: 8.22.0
-      zod: 4.6.5
+      zod: 4.6.7
 
   p-retry@4.6.2:
     dependencies:
@@ -1172,8 +1172,8 @@ snapshots:
 
   ws@8.22.0: {}
 
-  zod-to-json-schema@3.25.2(zod@4.6.5):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
-  zod@4.6.5: {}
+  zod@4.6.7: {}
