@@ -73,6 +73,12 @@ export interface CatalogLike {
 const DEFAULT_CONTEXT_WINDOW = 262144
 const DEFAULT_MAX_TOKENS = 32768
 
+/** Match Magpie's DSH defaults: reserve reply space without exhausting the compaction budget. */
+function requestDefaultMaxTokens(contextWindow: number, outputLimit: number): number {
+  const room = Math.max(1, Math.floor(contextWindow / 4), Math.floor(contextWindow / 2) - 65536)
+  return Math.min(outputLimit, room)
+}
+
 /** Credential sent to the Magpie gateway (it needs none; pi-ai requires a value). */
 const DEFAULT_API_KEY = 'not-needed'
 
@@ -324,13 +330,14 @@ export class MagpieAdapter {
     // No `off` entry: omission keeps the gateway default (= defaultEffort).
     const image = this.#catalog.supportsImage?.(model) ?? this.#catalog.requiresResponsesApi?.(model) ?? false
     const ladder = this.#catalog.reasoningFor?.(model)
+    const contextWindow = this.#catalog.contextWindowFor?.(model) ?? DEFAULT_CONTEXT_WINDOW
     return {
       provider,
       id: model,
       name: model,
       inputModalities: image ? ['text', 'image'] : ['text'],
-      context: { contextWindow: this.#catalog.contextWindowFor?.(model) ?? DEFAULT_CONTEXT_WINDOW },
-      defaultMaxTokens: this.#catalog.maxTokensFor?.(model) ?? DEFAULT_MAX_TOKENS,
+      context: { contextWindow },
+      defaultMaxTokens: requestDefaultMaxTokens(contextWindow, this.#catalog.maxTokensFor?.(model) ?? DEFAULT_MAX_TOKENS),
       ...(ladder !== undefined ? { reasoning: ladder } : {}),
     }
   }
@@ -433,7 +440,7 @@ export class MagpieAdapter {
       maxRetries: this.#maxRetries,
       timeoutMs: this.#timeoutMs,
       temperature: options.temperature,
-      maxTokens: options.maxTokens ?? model.maxTokens,
+      maxTokens: options.maxTokens ?? requestDefaultMaxTokens(model.contextWindow, model.maxTokens),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     })
   }
