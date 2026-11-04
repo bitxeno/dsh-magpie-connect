@@ -3,6 +3,7 @@ import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { createWriteQueue } from './write-queue.ts'
+import { PENDING_RETRY_DELAY_MS, shouldRetryPending, type SnapshotStatus } from './load-retry.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
@@ -91,6 +92,12 @@ export function MagpieSettings(): unknown {
   const [modelsStatus, setModelsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [modelsError, setModelsError] = useState<string | undefined>(undefined)
   const [loaded, setLoaded] = useState(false)
+  /**
+   * Set the moment the user touches either credential field. The first read
+   * and any in-flight warm-up then leave those fields alone, so a slow load
+   * cannot overwrite characters typed while it was still on the wire.
+   */
+  const credentialsDirty = useRef(false)
 
   /**
    * The model list autosaves: remove and adopt are discrete, deliberate acts,
@@ -117,6 +124,26 @@ export function MagpieSettings(): unknown {
     /** Bound the retries: a gateway that stays down is a status line, not a spin. */
     let attempts = 0
 
+    /**
+     * Re-read **only** the model list while the catalog is still warming up.
+     *
+     * Deliberately does not touch `baseUrl`/`apiKey`: the earlier version
+     * re-ran the whole load on every pending tick, which wrote the stored URL
+     * and key back into the form about once a second — typing in the API URL
+     * field looked like it kept re-typing itself. Credentials belong to the
+     * first load and the user's own edits; the model rows are all a warm-up
+     * re-read has any business changing.
+     */
+    const rereadModels = async (): Promise<void> => {
+      const value = (await request('/api/magpie-models')) as { models: ModelRow[]; snapshot?: SnapshotStatus }
+      if (!alive) return
+      setModels(value.models ?? [])
+      if (shouldRetryPending(value.snapshot, attempts)) {
+        attempts += 1
+        retry = setTimeout(() => void rereadModels().catch(() => {}), PENDING_RETRY_DELAY_MS)
+      }
+    }
+
     const load = async (): Promise<void> => {
       const [settingsValue, modelsValue] = await Promise.all([
         request('/api/magpie-settings'),
@@ -125,19 +152,22 @@ export function MagpieSettings(): unknown {
       if (!alive) return
       const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
       const listed = (modelsValue as { models: ModelRow[] }).models ?? []
-      const snapshot = (modelsValue as { snapshot?: { status?: string } }).snapshot
-      setBaseUrl(settings.baseUrl ?? '')
-      setApiKey(settings.apiKey ?? '')
+      const snapshot = (modelsValue as { snapshot?: SnapshotStatus }).snapshot
+      // A slow first read must not clobber what the user typed meanwhile.
+      if (!credentialsDirty.current) {
+        setBaseUrl(settings.baseUrl ?? '')
+        setApiKey(settings.apiKey ?? '')
+      }
       setEnabled(settings.enabledModels)
       setModels(listed)
       setLoaded(true)
-      // The Host answers before its catalog has warmed up, and the first paint
-      // would otherwise freeze on the built-in snapshot — a short list that
-      // looks like the user's saved models were lost. Re-read until the live
-      // directory has landed.
-      if (snapshot?.status === 'pending' && attempts < 20) {
+      // The Host answers before its catalog has warmed up, and the first
+      // paint would otherwise freeze on the built-in snapshot — a short list
+      // that looks like the user's saved models were lost. Re-read the rows
+      // until the live directory has landed; never the credentials above.
+      if (shouldRetryPending(snapshot, attempts)) {
         attempts += 1
-        retry = setTimeout(() => void load().catch(() => {}), 1000)
+        retry = setTimeout(() => void rereadModels().catch(() => {}), PENDING_RETRY_DELAY_MS)
       }
     }
 
@@ -241,11 +271,11 @@ export function MagpieSettings(): unknown {
         <p style={css.hint}>{text('requiredNote')}</p>
         <div style={css.field}>
           <span style={css.label}>{text('baseUrl')}</span>
-          <Input value={baseUrl} placeholder={text('baseUrlPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => setBaseUrl(event.currentTarget.value)} />
+          <Input value={baseUrl} placeholder={text('baseUrlPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => { credentialsDirty.current = true; setBaseUrl(event.currentTarget.value) }} />
         </div>
         <div style={css.field}>
           <span style={css.label}>{text('apiKey')}</span>
-          <Input type="password" value={apiKey} placeholder={text('apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => setApiKey(event.currentTarget.value)} />
+          <Input type="password" value={apiKey} placeholder={text('apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => { credentialsDirty.current = true; setApiKey(event.currentTarget.value) }} />
         </div>
         <div style={css.row}>
           <Button variant="primary" disabled={working || incomplete} onClick={() => void save()}>
