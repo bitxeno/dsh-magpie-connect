@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { MagpieAdapter, planReasoningEffort, type CatalogLike } from '../src/adapter/magpie-adapter.ts'
-import { ModelCatalog } from '../src/adapter/catalog.ts'
+import { decodeMagpieModels, ModelCatalog } from '../src/adapter/catalog.ts'
 import type { HarnessChunk, PiEvent } from '../src/adapter/events.ts'
 import type { HarnessGenerateOptions, HarnessMessage } from '../src/adapter/messages.ts'
 
@@ -267,6 +267,44 @@ test('host maxTokens passes through uncapped, missing falls back to the model li
   const adapter2 = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen2) })
   await collectChunks(adapter2, streamOptions())
   assert.equal(seen2[0]?.maxTokens, 32768)
+})
+
+test('request defaults leave room for DSH compaction without changing gateway capacities', async (t) => {
+  const cases = [
+    { context: 500000, output: 393216, expected: 184464 },
+    { context: 524288, output: 524288, expected: 196608 },
+    { context: 131072, output: 65536, expected: 32768 },
+    { context: 1000000, output: 393216, expected: 393216 },
+    { context: 262144, output: 32768, expected: 32768 },
+  ]
+  for (const responses of [false, true]) {
+    for (const { context, output, expected } of cases) {
+      await t.test(`${responses ? 'responses' : 'chat'} ${context}/${output}`, async () => {
+        const catalog = new ModelCatalog({ baseUrl: 'http://test.lan/v1', apiKey: 'test-key' })
+        catalog.adoptDirectory(decodeMagpieModels({ data: [{
+          id: 'm',
+          context_window: context,
+          max_output_tokens: output,
+          modalities: { input: ['text', 'image'] },
+          native_endpoints: [responses ? '/v1/responses' : '/v1/chat/completions'],
+        }] }))
+        const seen: SeenCall[] = []
+        const adapter = testAdapter(catalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+        const prepared = await adapter.prepareCall('dsh-magpie-connect', 'm')
+        assert.equal(prepared.model.defaultMaxTokens, expected)
+        assert.equal(prepared.model.context.contextWindow, context)
+        assert.deepEqual(prepared.model.inputModalities, ['text', 'image'])
+
+        await collectChunks(adapter, streamOptions())
+        assert.equal(seen[0]?.maxTokens, expected)
+        assert.equal(seen[0]?.wireModel.maxTokens, output)
+        assert.equal(catalog.maxTokensFor('m'), output)
+
+        await collectChunks(adapter, streamOptions({ maxTokens: output }))
+        assert.equal(seen[1]?.maxTokens, output, 'explicit request budgets are preserved')
+      })
+    }
+  }
 })
 
 test('connection setup uses explicit retries/timeout instead of bare SDK defaults', async () => {
