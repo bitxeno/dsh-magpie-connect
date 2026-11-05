@@ -1,5 +1,6 @@
 import { NS, EN, ZH, setLocaleRuntime, text, type LocaleRuntime } from './i18n.ts'
 import { installSettingsNavIcon } from './nav-icon.ts'
+import { MagpieSectionIcon } from './section-icon.tsx'
 import { MagpieSettings } from './page.tsx'
 
 interface Slots {
@@ -62,9 +63,27 @@ export function apply(ctx: ClientContext): void {
       MagpieSettings,
     ),
   )
-  // `settings.section` projects only id/order/label and the shell's nav glyph is
-  // a hardcoded map by id, so this plugin's row would draw the fallback gear.
-  // Claim it and swap in the mark; see nav-icon.ts for why and when to delete.
+  // Native nav glyph for shells that declare `settings.section.icon` (its entry
+  // id must equal the section id above). Older shells never declare this slot,
+  // so the injection no-ops there and the legacy DOM claim below keeps their
+  // gear-swap working; the two are mutually exclusive at render time.
+  ctx.slots.inject('settings.section.icon', () =>
+    ctx.slots.register(
+      {
+        name: 'settings.section.icon',
+        id: 'dsh-magpie-connect',
+        order: 12,
+        locale: NS,
+        label: () => text('nav'),
+      },
+      MagpieSectionIcon,
+    ),
+  )
+  // `settings.section` projects only id/order/label on older shells and the
+  // nav glyph there is a hardcoded map by id, so this plugin's row would draw
+  // the fallback gear. Claim it and swap in the mark; see nav-icon.ts for why
+  // and when to delete. On newer shells the slot icon above wins and this
+  // fallback stands down (its CSS is gated on the slot glyph being absent).
   installSettingsNavIcon(ctx, () => text('nav'))
 }
 
