@@ -42,7 +42,38 @@ test('baseUrl/apiKey point at the LAN gateway by default and accept overrides', 
   assert.equal(custom.apiKey, 'secret')
 })
 
-test('dataDir defaults to the home dotdir and accepts overrides', () => {
-  assert.match(resolveConfig().dataDir, /\.dsh-magpie-connect$/)
+test('dataDir defaults under the Harness home storages dir and accepts overrides', () => {
+  const base = resolveConfig()
+  assert.match(base.dataDir, /[\\/]storages[\\/]magpie-connect$/)
   assert.equal(resolveConfig({ dataDir: '/tmp/x' }).dataDir, '/tmp/x')
+})
+
+test('dataDir honours DSH_HOME and legacyDataDir stays homedir-based', async () => {
+  const { resolveConfig: freshResolve } = await import('../src/config.ts')
+  const { legacyDataDir, resolveDshHome } = await import('../src/homeDir.ts')
+  const saved = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = '/tmp/dsh-home-test'
+    // Config reads $DSH_HOME at resolve time.
+    assert.equal(freshResolve().dataDir, '/tmp/dsh-home-test/storages/magpie-connect')
+    assert.equal(resolveDshHome(), '/tmp/dsh-home-test')
+    // A blank override must be treated as unset, never resolving to cwd.
+    process.env.DSH_HOME = '   '
+    assert.match(freshResolve().dataDir, /[\\/]storages[\\/]magpie-connect$/)
+    assert.notEqual(freshResolve().dataDir, '   /storages/magpie-connect')
+  } finally {
+    if (saved === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved
+  }
+  // The pre-0.5 directory is homedir-based and must ignore DSH_HOME, or an
+  // upgrade would look for the old file in the new root and lose it.
+  const saved2 = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = '/tmp/ignored-home'
+    assert.match(legacyDataDir(), /[\\/]\.dsh-magpie-connect$/)
+    assert.equal(legacyDataDir().includes('/tmp/ignored-home'), false)
+  } finally {
+    if (saved2 === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved2
+  }
 })

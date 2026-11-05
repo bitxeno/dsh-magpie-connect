@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { readFile, rename, rm, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
@@ -672,11 +673,17 @@ interface ModelsCache {
 
 async function saveModelsCache(path: string, entries: Map<string, MagpieModelEntry>, now: number): Promise<void> {
   const cache: ModelsCache = { updatedAt: now, entries: [...entries.values()] }
-  const tmp = `${path}.${process.pid}.tmp`
+  // Same atomic-replace discipline as SettingsStore: random-suffix sibling,
+  // rename over the target, no `rm` window. The cache is reproducible, so a
+  // lost write is harmless — but a half-written file is not worth risking.
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(tmp, JSON.stringify(cache), 'utf8')
-  await rm(path, { force: true })
-  await rename(tmp, path)
+  try {
+    await writeFile(tmp, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    await rename(tmp, path)
+  } finally {
+    await rm(tmp, { force: true }).catch(() => {})
+  }
 }
 
 async function loadModelsCache(path: string): Promise<Map<string, MagpieModelEntry>> {

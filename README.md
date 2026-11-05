@@ -90,8 +90,12 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
 **从旧版本升级，我原来的删除记录还在吗？**
 
 在。首次启动会自动把旧的 `hiddenModels`（黑名单）换算成 `enabledModels`（白名单），
-并写回 `~/.dsh-magpie-connect/settings.json`，只执行一次。若升级时网关不可达、
-算不出旧列表，则退回「继承网关目录」，不会误删你能用的模型。
+只执行一次。若升级时网关不可达、算不出旧列表，则退回「继承网关目录」，不会误删你能用的模型。
+
+> 配置文件位置：从 0.5.0 起写在 `$DSH_HOME/storages/magpie-connect/settings.json`
+>（默认 `~/.dsh/storages/magpie-connect/settings.json`）。老版本的
+> `~/.dsh-magpie-connect/settings.json` **不迁移、不删除**，只做只读兼容——升级后不改任何文件；
+> 你第一次在设置页保存（或删除模型触发自动保存）时，新配置才会写入新位置，同时清掉旧文件。
 
 **为什么我删掉的模型又出现了？**
 
@@ -144,7 +148,7 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
 | `displayName` | `Magpie` | 模型选择器里的分组名。 |
 | `baseUrl` | `http://127.0.0.1:3425/v1` | 带版本号的 API 地址。 |
 | `apiKey` | `''`（未配置） | 网关凭据。必填，即使网关不校验——地址有默认值，Key 没有。 |
-| `dataDir` | `~/.dsh-magpie-connect` | 状态目录（状态快照、设置文件、模型缓存）。 |
+| `dataDir` | `$DSH_HOME/storages/magpie-connect` | 状态目录（状态快照、设置文件、模型缓存）。默认 `~/.dsh/storages/magpie-connect`；显式指定后不会读写旧目录。 |
 | `refreshSeconds` | `300` | 模型目录刷新间隔（秒）。 |
 | `maxRetries` | `2` | 遇到 429/5xx 时的连接重试次数。 |
 | `timeoutMs` | `300000` | 单次请求的总超时（毫秒）。 |
@@ -177,7 +181,7 @@ http://127.0.0.1:3425/v1  ← 按 native_endpoints 选择 chat/completions 或 r
 - **容错** — 启动即注册，目录在后台预热；静默挂起会被看门狗快速判为超时；
   上游截断如实上报，不做自动续写。
 
-运行状态快照写在 `~/.dsh-magpie-connect/adapter-status.json`，设置与缓存在同一目录。
+运行状态快照写在 `<dataDir>/adapter-status.json`（默认 `~/.dsh/storages/magpie-connect/adapter-status.json`），设置与缓存在同一目录。
 
 ## 开发
 

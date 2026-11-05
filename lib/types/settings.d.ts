@@ -89,14 +89,18 @@ export declare class SettingsStore {
     #private;
     constructor(options?: {
         path?: string;
+        legacyPath?: string;
     });
     /**
-     * Read and normalize the persisted document (missing/corrupt reads as empty,
-     * never throws). Does not touch memory or disk.
+     * Read and normalize the persisted document without touching memory or disk.
      *
-     * Separate from {@link load} because the legacy conversion needs the gateway
-     * directory, and that can only be read once the persisted endpoint is known:
-     * the process starts with the patch/default endpoint, not the user's.
+     * New location first; when it is absent, fall back **read-only** to the
+     * pre-0.5 file so an upgrade shows the user's saved endpoint immediately.
+     *
+     * A file that is *present but unreadable* is NOT treated as "no
+     * configuration": it sets {@link #loadFailed} (blocking a later partial save
+     * from overwriting it with the blank state) and still returns `{}` so callers
+     * have something to render.
      */
     read(): Promise<MagpiePageSettings>;
     /**

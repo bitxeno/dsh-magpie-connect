@@ -8,12 +8,17 @@
 # (saved to <dataDir>/settings.json, applied without restart) and hides models
 # from the picker. Page values win per-field; the patch config below stays as
 # fallback (e.g. headless compositions without the settings page).
+# <dataDir> defaults to $DSH_HOME/storages/magpie-connect
+# (~/.dsh/storages/magpie-connect). The pre-0.5 dir ~/.dsh-magpie-connect is
+# read once as a fallback and removed on the first save; it is never migrated
+# eagerly, so an upgrade that changes nothing touches no file.
 #
 # - baseUrl: versioned API root (default http://127.0.0.1:3425/v1). Include the
 #   version segment: the plugin appends only the resource (/models, /responses),
 #   so a gateway on /v2 or /v3 is reached by changing this one string.
 # - apiKey:  gateway credential (required, even if /models needs none).
-# - dataDir: plugin state dir (status snapshot, settings file, catalog cache).
+# - dataDir: plugin state dir (status snapshot, settings file, catalog cache);
+#   defaults to $DSH_HOME/storages/magpie-connect.
 # - displayName: cosmetic label in the model picker (route id stays providerId).
 # - providerId:  RENAME the route id itself (existing sessions pointing at the
 #   old id will orphan — prefer displayName for a cosmetic rename).

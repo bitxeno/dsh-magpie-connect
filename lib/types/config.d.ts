@@ -27,7 +27,8 @@ export interface DshMagpieConnectConfig {
     apiKey?: string;
     /**
      * Plugin state directory (status snapshot, settings file, catalog cache).
-     * Defaults to `~/.dsh-magpie-connect`.
+     * Defaults to `$DSH_HOME/storages/magpie-connect`
+     * (`~/.dsh/storages/magpie-connect`).
      */
     dataDir?: string;
     /** Model list refresh interval in seconds. */

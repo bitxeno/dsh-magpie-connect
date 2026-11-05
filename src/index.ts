@@ -8,6 +8,7 @@ import {
   type CatalogSnapshot,
   type MagpieModelEntry,
 } from './adapter/catalog.ts'
+import { legacyDataDir } from './homeDir.ts'
 import { MagpieAdapter } from './adapter/magpie-adapter.ts'
 import type { AttachmentStore } from './adapter/messages.ts'
 import { resolveConfig, type DshMagpieConnectConfig } from './config.ts'
@@ -468,7 +469,13 @@ export function apply(
     ).catch(() => {})
   }
 
-  const store = new SettingsStore({ path: defaultSettingsPath(dataDir) })
+  // An explicit `dataDir` means the user owns the path: never read the pre-0.5
+  // file and never delete anything. Otherwise the store falls back read-only to
+  // `~/.dsh-magpie-connect/settings.json` and migrates it on the first save.
+  const store = new SettingsStore({
+    path: defaultSettingsPath(dataDir),
+    legacyPath: config.dataDir === undefined ? join(legacyDataDir(), 'settings.json') : undefined,
+  })
   const patchEndpoint = { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey }
   const effective = () => resolveEffectiveEndpoint(patchEndpoint, store.get())
 

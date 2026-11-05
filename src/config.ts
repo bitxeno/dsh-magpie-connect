@@ -11,8 +11,7 @@
  * to `<dataDir>/settings.json`, applied without restart) and hides models
  * from the picker. Page values win per-field; patch config is the fallback.
  */
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dshHomePath } from './homeDir.ts'
 export interface DshMagpieConnectConfig {
   /**
    * Provider route id registered into DSH (the grouping key in the model
@@ -42,7 +41,8 @@ export interface DshMagpieConnectConfig {
   apiKey?: string
   /**
    * Plugin state directory (status snapshot, settings file, catalog cache).
-   * Defaults to `~/.dsh-magpie-connect`.
+   * Defaults to `$DSH_HOME/storages/magpie-connect`
+   * (`~/.dsh/storages/magpie-connect`).
    */
   dataDir?: string
   /** Model list refresh interval in seconds. */
@@ -92,6 +92,6 @@ export function resolveConfig(config: DshMagpieConnectConfig = {}): ResolvedConf
     displayName: config.displayName ?? (config.providerId ?? defaults.displayName),
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     apiKey: config.apiKey ?? defaults.apiKey,
-    dataDir: config.dataDir ?? join(homedir(), '.dsh-magpie-connect'),
+    dataDir: config.dataDir ?? dshHomePath('storages', 'magpie-connect'),
   }
 }

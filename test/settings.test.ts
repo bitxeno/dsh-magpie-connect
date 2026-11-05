@@ -263,3 +263,104 @@ test('load() rewrites a legacy file on disk exactly once', async () => {
   const again = new SettingsStore({ path })
   assert.deepEqual((await again.load(['a', 'b', 'c'])).enabledModels, ['a', 'c'])
 })
+
+// --- pre-0.5 compatibility: read-only fallback, migrate on first save --------
+
+/** Create a new-style data dir plus a legacy dir, returning both settings paths. */
+function twoDirs() {
+  const newDir = mkdtempSync(join(tmpdir(), 'magpie-new-'))
+  const oldDir = mkdtempSync(join(tmpdir(), 'magpie-old-'))
+  return {
+    newDir,
+    oldDir,
+    newPath: join(newDir, 'settings.json'),
+    oldPath: join(oldDir, 'settings.json'),
+  }
+}
+
+test('read falls back to the legacy file when the new one is absent', async () => {
+  const { newPath, oldPath } = twoDirs()
+  const { writeFileSync, existsSync } = await import('node:fs')
+  writeFileSync(oldPath, JSON.stringify({ baseUrl: 'http://old/v1', apiKey: 'sk-old', enabledModels: ['a'] }))
+
+  const store = new SettingsStore({ path: newPath, legacyPath: oldPath })
+  const read = await store.read()
+  assert.deepEqual(read, { baseUrl: 'http://old/v1', apiKey: 'sk-old', enabledModels: ['a'] })
+  // Read-only: nothing written, nothing deleted yet.
+  assert.equal(existsSync(newPath), false)
+  assert.equal(existsSync(oldPath), true)
+})
+
+test('the first save writes the full document to the new path and deletes the legacy file', async () => {
+  const { newPath, oldPath } = twoDirs()
+  const { writeFileSync, readFileSync, existsSync } = await import('node:fs')
+  writeFileSync(oldPath, JSON.stringify({ baseUrl: 'http://old/v1', apiKey: 'sk-old', enabledModels: ['a'] }))
+
+  const store = new SettingsStore({ path: newPath, legacyPath: oldPath })
+  await store.load()
+  // Model-list autosave posts only enabledModels — must not lose the credentials.
+  await store.save({ enabledModels: ['a', 'b'] })
+
+  const onNew = JSON.parse(readFileSync(newPath, 'utf8')) as Record<string, unknown>
+  assert.equal(onNew.baseUrl, 'http://old/v1')
+  assert.equal(onNew.apiKey, 'sk-old')
+  assert.deepEqual(onNew.enabledModels, ['a', 'b'])
+  assert.equal(existsSync(oldPath), false, 'legacy file is removed once the new one is written')
+})
+
+test('a populated new file wins and the legacy file is never touched', async () => {
+  const { newPath, oldPath } = twoDirs()
+  const { writeFileSync, readFileSync, existsSync } = await import('node:fs')
+  writeFileSync(newPath, JSON.stringify({ baseUrl: 'http://new/v1', apiKey: 'sk-new', enabledModels: [] }))
+  writeFileSync(oldPath, JSON.stringify({ baseUrl: 'http://old/v1', apiKey: 'sk-old' }))
+
+  const store = new SettingsStore({ path: newPath, legacyPath: oldPath })
+  await store.load()
+  await store.save({ enabledModels: ['x'] })
+
+  assert.equal((JSON.parse(readFileSync(newPath, 'utf8')) as { apiKey: string }).apiKey, 'sk-new')
+  assert.equal(existsSync(oldPath), true, 'a legacy file is only removed when it was the source')
+})
+
+test('an explicit dataDir never reads or deletes a legacy file', async () => {
+  const { newPath, oldPath } = twoDirs()
+  const { writeFileSync, existsSync } = await import('node:fs')
+  writeFileSync(oldPath, JSON.stringify({ baseUrl: 'http://old/v1', apiKey: 'sk-old' }))
+
+  // legacyPath undefined == the caller owns the path.
+  const store = new SettingsStore({ path: newPath })
+  assert.deepEqual(await store.read(), {})
+  await store.save({ enabledModels: ['a'] })
+  assert.equal(existsSync(oldPath), true)
+})
+
+test('a corrupt legacy file is not written to the new path', async () => {
+  const { newPath, oldPath } = twoDirs()
+  const { writeFileSync, existsSync } = await import('node:fs')
+  writeFileSync(oldPath, '{ this is not json')
+
+  const store = new SettingsStore({ path: newPath, legacyPath: oldPath })
+  const read = await store.load()
+  assert.deepEqual(read, {})
+  // Guard: a partial (autosave) write is refused because the source was unreadable.
+  await assert.rejects(store.save({ enabledModels: ['a'] }), /unreadable/)
+  assert.equal(existsSync(newPath), false, 'the corrupt source must not be frozen into the new path')
+  // A complete save (with credentials) is allowed and clears the degraded state.
+  await store.save({ baseUrl: 'http://new/v1', apiKey: 'sk-new', enabledModels: ['a'] })
+  assert.equal(existsSync(newPath), true)
+})
+
+test('concurrent saves from two stores do not clobber each other', async () => {
+  const { newPath } = twoDirs()
+  const { readFileSync, existsSync } = await import('node:fs')
+  const a = new SettingsStore({ path: newPath })
+  const b = new SettingsStore({ path: newPath })
+  await a.load()
+  await b.load()
+  await Promise.all([a.save({ baseUrl: 'http://a/v1', apiKey: 'ka', enabledModels: ['a'] }), b.save({ baseUrl: 'http://b/v1', apiKey: 'kb', enabledModels: ['b'] })])
+  assert.equal(existsSync(newPath), true)
+  const onDisk = JSON.parse(readFileSync(newPath, 'utf8')) as { baseUrl: string; apiKey: string }
+  // Either write may win, but the file must be complete and valid — never a torn mix.
+  assert.ok(['http://a/v1', 'http://b/v1'].includes(onDisk.baseUrl))
+  assert.ok(['ka', 'kb'].includes(onDisk.apiKey))
+})

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
@@ -171,29 +172,106 @@ export function isConfigured(endpoint: EffectiveEndpoint): boolean {
 /** In-memory settings with file persistence. Synchronous reads for the hot path. */
 export class SettingsStore {
   #path?: string
+  /**
+   * Pre-0.5 settings file (`~/.dsh-magpie-connect/settings.json`), or
+   * `undefined` when no read-through-and-migrate is wanted (an explicit
+   * `dataDir` means the user owns the path — never fall back, never delete).
+   *
+   * Read-only until the first successful write: settings are only moved to the
+   * new location when the user saves something, so an upgrade that changes no
+   * setting touches no file at all.
+   */
+  #legacyPath?: string
+  /** True while the live state came from {@link #legacyPath}, not {@link #path}. */
+  #legacySource = false
+  /**
+   * Set when the settings file exists but could not be read/parsed at startup.
+   * Blocks a partial save (e.g. the model-list autosave that posts only
+   * `enabledModels`) from writing the empty in-memory state over a file whose
+   * credentials we simply failed to load — that is how a key silently vanished.
+   */
+  #loadFailed = false
   #settings: MagpiePageSettings = {}
+  /** Serializes writes: one persist in flight, so two generations cannot interleave. */
+  #writeChain: Promise<void> = Promise.resolve()
   #listeners = new Set<() => void>()
 
-  constructor(options: { path?: string } = {}) {
+  constructor(options: { path?: string; legacyPath?: string } = {}) {
     this.#path = options.path
+    this.#legacyPath = options.legacyPath
   }
 
   /**
-   * Read and normalize the persisted document (missing/corrupt reads as empty,
-   * never throws). Does not touch memory or disk.
+   * Read one settings file, distinguishing "absent" from "unreadable".
    *
-   * Separate from {@link load} because the legacy conversion needs the gateway
-   * directory, and that can only be read once the persisted endpoint is known:
-   * the process starts with the patch/default endpoint, not the user's.
+   * Returns the raw parsed document (`raw`) untouched so the legacy
+   * `hiddenModels` conversion can still see that field; validation happens in
+   * {@link read}. `exists: true` with `raw: undefined` means the file is there
+   * but could not be read or parsed — callers must not mistake that for "no
+   * configuration", or a later save would persist the blank state over a
+   * perfectly good file.
+   * @param path - file to read; `undefined` yields `{ exists: false }`.
+   */
+  async #readFile(path?: string): Promise<{ exists: boolean; raw?: unknown; error?: unknown }> {
+    if (!path) return { exists: false }
+    let text: string
+    try {
+      text = await readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false }
+      return { exists: true, error }
+    }
+    try {
+      return { exists: true, raw: JSON.parse(text) as unknown }
+    } catch (error) {
+      return { exists: true, error }
+    }
+  }
+
+  /**
+   * Locate the document to use: new location first, then the pre-0.5 file.
+   *
+   * A file that exists but is unreadable is returned as-is (`exists: true`,
+   * `raw: undefined`) so callers can flag it instead of mistaking it for
+   * "no configuration". A present-but-corrupt NEW file is authoritative and
+   * does not fall back to the legacy one — that could resurrect stale
+   * credentials over a deliberately replaced file.
+   */
+  async #resolveRaw(): Promise<{ exists: boolean; raw?: unknown; error?: unknown }> {
+    const fromNew = await this.#readFile(this.#path)
+    if (fromNew.raw !== undefined) return fromNew
+    if (fromNew.exists) return fromNew
+    const fromOld = await this.#readFile(this.#legacyPath)
+    if (fromOld.raw !== undefined) {
+      this.#legacySource = true
+      return fromOld
+    }
+    return fromOld
+  }
+
+  /**
+   * Read and normalize the persisted document without touching memory or disk.
+   *
+   * New location first; when it is absent, fall back **read-only** to the
+   * pre-0.5 file so an upgrade shows the user's saved endpoint immediately.
+   *
+   * A file that is *present but unreadable* is NOT treated as "no
+   * configuration": it sets {@link #loadFailed} (blocking a later partial save
+   * from overwriting it with the blank state) and still returns `{}` so callers
+   * have something to render.
    */
   async read(): Promise<MagpiePageSettings> {
-    if (!this.#path) return {}
-    try {
-      const raw = JSON.parse(await readFile(this.#path, 'utf8')) as unknown
-      return normalizePageSettings(raw)
-    } catch {
-      return {}
+    const resolved = await this.#resolveRaw()
+    if (resolved.raw !== undefined) {
+      try {
+        return normalizePageSettings(resolved.raw)
+      } catch {
+        this.#loadFailed = true
+        return {}
+      }
     }
+    if (resolved.exists) this.#loadFailed = true
+    return {}
   }
 
   /**
@@ -209,14 +287,15 @@ export class SettingsStore {
    */
   async load(known?: readonly string[]): Promise<MagpiePageSettings> {
     if (!this.#path) return this.get()
-    let raw: unknown
-    try {
-      raw = JSON.parse(await readFile(this.#path, 'utf8'))
-    } catch {
+    // Use the RAW document, not the normalized one: the legacy `hiddenModels`
+    // conversion needs the field `normalizePageSettings` would drop.
+    const resolved = await this.#resolveRaw()
+    if (resolved.raw === undefined) {
+      if (resolved.exists) this.#loadFailed = true
       this.#settings = {}
       return this.get()
     }
-    const { settings, migrated } = migrateLegacySettings(raw, known)
+    const { settings, migrated } = migrateLegacySettings(resolved.raw, known)
     this.#settings = settings
     if (migrated) await this.persist().catch(() => {})
     return this.get()
@@ -247,8 +326,18 @@ export class SettingsStore {
   /** Merge a partial payload, persist, and notify listeners. */
   async save(partial: unknown): Promise<MagpiePageSettings> {
     const normalized = normalizePageSettings(partial)
+    // Guard: after a failed startup read, refuse a partial save (the model-list
+    // autosave posts only `enabledModels`) — persisting the blank in-memory
+    // state would erase credentials we merely failed to load.
+    if (this.#loadFailed && normalized.baseUrl === undefined && normalized.apiKey === undefined) {
+      throw new Error(
+        'dsh-magpie-connect: settings file was unreadable; refusing to overwrite it with a partial save — reload the settings page or restore settings.json',
+      )
+    }
     this.#settings = { ...this.#settings, ...normalized }
     await this.persist()
+    // A complete save (both credentials present) proves the state is trustworthy again.
+    if (normalized.baseUrl !== undefined && normalized.apiKey !== undefined) this.#loadFailed = false
     this.#emit()
     return this.get()
   }
@@ -268,11 +357,47 @@ export class SettingsStore {
 
   async persist(): Promise<void> {
     if (!this.#path) return
-    const tmp = `${this.#path}.${process.pid}.tmp`
-    await mkdir(dirname(this.#path), { recursive: true })
-    await writeFile(tmp, JSON.stringify(this.#settings, null, 2), 'utf8')
-    await rm(this.#path, { force: true })
-    await rename(tmp, this.#path)
+    // Serialize: one write in flight, so overlapping generations cannot
+    // interleave a read-modify-write or clobber each other's temp file.
+    this.#writeChain = this.#writeChain.then(
+      () => this.#writeNow(),
+      () => this.#writeNow(),
+    )
+    await this.#writeChain
+  }
+
+  /**
+   * Write the current state to {@link #path} atomically, then clean up the
+   * pre-0.5 file if this generation had read from it.
+   *
+   * The temp file is a random-suffixed sibling opened with `wx` and renamed
+   * over the target — no `rm` beforehand (that opened a window where the file
+   * did not exist and a concurrent read saw an empty document), and a random
+   * suffix so two generations in one process cannot share a temp name.
+   */
+  async #writeNow(): Promise<void> {
+    const target = this.#path
+    if (!target) return
+    await mkdir(dirname(target), { recursive: true })
+    const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
+    try {
+      await writeFile(tmp, JSON.stringify(this.#settings, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      await rename(tmp, target)
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {})
+    }
+    // The new file is durable now; only then drop the legacy one. A failed
+    // delete is harmless (the new file is authoritative) and is retried on the
+    // next save because `#legacySource` stays true.
+    if (this.#legacySource && this.#legacyPath) {
+      await rm(this.#legacyPath, { force: true })
+        .then(() => {
+          this.#legacySource = false
+        })
+        .catch(() => {
+          // keep #legacySource so a later save retries the cleanup
+        })
+    }
   }
 
   #emit(): void {
