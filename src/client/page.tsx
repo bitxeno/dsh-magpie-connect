@@ -9,9 +9,36 @@ export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
 export type { ModelRow }
 
+/** Where the GitHub mark points: the plugin's public repository. */
+const REPO_URL = 'https://github.com/bitxeno/dsh-magpie-connect'
+
 const css: Record<string, Record<string, string | number>> = {
   section: { display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 780, paddingBottom: 32 },
+  /**
+   * Title row: brand block (title + version, then the intro) on the left, the
+   * GitHub action pinned right. Sits where the bare `<h2>` used to, so the rest
+   * of the page keeps its spacing.
+   */
+  header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, margin: 0 },
+  brand: { display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 },
+  heading: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },
   title: { margin: 0, fontSize: 22, lineHeight: '30px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
+  version: { fontSize: 11, lineHeight: '16px', fontWeight: 500, letterSpacing: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', color: 'var(--dsw-alias-label-tertiary)' },
+  actions: { display: 'flex', alignItems: 'center', gap: 8, flex: 'none' },
+  iconLink: {
+    display: 'inline-grid',
+    placeItems: 'center',
+    width: 30,
+    height: 30,
+    padding: 0,
+    boxSizing: 'border-box',
+    border: '1px solid var(--dsw-alias-border-l2)',
+    borderRadius: 8,
+    color: 'var(--dsw-alias-label-secondary)',
+    background: 'var(--dsw-alias-bg-layer-1)',
+    textDecoration: 'none',
+    cursor: 'pointer',
+  },
   intro: { margin: 0, fontSize: 14, lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' },
   card: { display: 'flex', flexDirection: 'column', gap: 14, padding: 18, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 12, background: 'var(--dsw-alias-bg-layer-1)' },
   cardTitle: { margin: 0, fontSize: 15, lineHeight: '22px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
@@ -263,8 +290,29 @@ export function MagpieSettings(): unknown {
 
   return (
     <section style={css.section}>
-      <h2 style={css.title}>{text('title')}</h2>
-      <p style={css.intro}>{text('intro')}</p>
+      <header style={css.header}>
+        <div style={css.brand}>
+          <div style={css.heading}>
+            <h2 style={css.title}>{text('title')}</h2>
+            <span style={css.version}>v{PLUGIN_VERSION}</span>
+          </div>
+          <p style={css.intro}>{text('intro')}</p>
+        </div>
+        <div style={css.actions}>
+          <a
+            href={REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={text('github')}
+            title={text('github')}
+            style={css.iconLink}
+          >
+            <svg width={18} height={18} viewBox="0 0 16 16" fill="currentColor" focusable="false" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.65 7.65 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+            </svg>
+          </a>
+        </div>
+      </header>
 
       <div style={css.card}>
         <h3 style={css.cardTitle}>{text('connection')}</h3>
@@ -306,9 +354,6 @@ export function MagpieSettings(): unknown {
         failure={modelsError}
       />
 
-      <p style={css.hint}>
-        {text('pluginVersion')} dsh-magpie-connect v{PLUGIN_VERSION}
-      </p>
     </section>
   )
 }
