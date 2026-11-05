@@ -70,6 +70,30 @@ test('listModels mirrors the catalog with image modalities and no duplicates', (
   assert.deepEqual(models.find((m) => m.id === 'b')?.inputModalities, ['text'])
 })
 
+test('listModels and resolveModel name a model by the gateway display_name, keeping the id', () => {
+  // The gateway lists `claude/claude-haiku-5-5` with display_name "Claude Haiku 5.5"; the picker
+  // should show that label, while the id (used for routing and session history) stays the route id.
+  const catalog = new ModelCatalog({ baseUrl: 'http://test.lan/v1', apiKey: 'k' })
+  catalog.adoptDirectory(new Map([
+    ['claude/claude-haiku-5-5', { id: 'claude/claude-haiku-5-5', displayName: 'Claude Haiku 5.5', image: true, nativeEndpoints: ['/v1/messages', '/v1/chat/completions'], reasoning: true }],
+    ['custom/no-label', { id: 'custom/no-label', displayName: 'custom/no-label', image: false, nativeEndpoints: ['/v1/chat/completions'], reasoning: false }],
+  ]))
+  const adapter = testAdapter(catalog)
+  const listed = adapter.listModels('dsh-magpie-connect')
+  const haiku = listed.find((m) => m.id === 'claude/claude-haiku-5-5')
+  assert.equal(haiku?.name, 'Claude Haiku 5.5')
+  assert.equal(listed.find((m) => m.id === 'custom/no-label')?.name, 'custom/no-label')
+  const resolved = adapter.resolveModel('dsh-magpie-connect', 'claude/claude-haiku-5-5')
+  assert.equal(resolved.id, 'claude/claude-haiku-5-5')
+  assert.equal(resolved.name, 'Claude Haiku 5.5')
+})
+
+test('a catalog without display names keeps naming models by id', () => {
+  const adapter = testAdapter(catalogStub({ 'codex/gpt-6-luna': { responses: true } }))
+  assert.equal(adapter.listModels('p')[0]?.name, 'codex/gpt-6-luna')
+  assert.equal(adapter.resolveModel('p', 'codex/gpt-6-luna').name, 'codex/gpt-6-luna')
+})
+
 test('resolveModel declares limits, modalities and the reasoning picker', () => {
   const adapter = testAdapter(
     catalogStub({
