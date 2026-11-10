@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
+import { chmod, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 /**
@@ -37,6 +37,19 @@ export interface MagpiePageSettings {
 export interface EffectiveEndpoint {
   baseUrl: string
   apiKey: string
+}
+
+/**
+ * What the settings page is allowed to see. The credential never travels to
+ * the browser: the page only learns whether one is stored, so a page that
+ * loads (or reloads) cannot leak it through the DOM, devtools, or an XSS in
+ * the host UI.
+ */
+export interface MagpieSettingsView {
+  baseUrl: string
+  hasApiKey: boolean
+  enabledModels?: string[]
+  inheritedModels: boolean
 }
 
 export const SETTINGS_FILE = 'settings.json'
@@ -195,10 +208,30 @@ export class SettingsStore {
   /** Serializes writes: one persist in flight, so two generations cannot interleave. */
   #writeChain: Promise<void> = Promise.resolve()
   #listeners = new Set<() => void>()
+  /**
+   * Whether the state directory is the plugin's own (`$DSH_HOME/storages/…`),
+   * in which case its permissions are tightened to `0700`. An explicit
+   * `dataDir` belongs to the user, so it is never chmod-ed behind their back.
+   * The settings file itself is repaired to `0600` either way: it holds a
+   * credential.
+   */
+  #privateDir: boolean
 
-  constructor(options: { path?: string; legacyPath?: string } = {}) {
+  constructor(options: { path?: string; legacyPath?: string; privateDir?: boolean } = {}) {
     this.#path = options.path
     this.#legacyPath = options.legacyPath
+    this.#privateDir = options.privateDir ?? false
+  }
+
+  /**
+   * Tighten permissions on a file this store owns, best-effort.
+   *
+   * Never throws: the file may live on a read-only mount, a non-POSIX
+   * filesystem, or a platform where `chmod` is a no-op. A permission repair
+   * must never make otherwise-readable settings unreadable.
+   */
+  async #chmodQuietly(path: string, mode: number): Promise<void> {
+    await chmod(path, mode).catch(() => {})
   }
 
   /**
@@ -221,6 +254,10 @@ export class SettingsStore {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false }
       return { exists: true, error }
     }
+    // Repair a pre-existing credential file (old versions wrote it with the
+    // process umask). Best-effort: never turn a readable file into an error.
+    await this.#chmodQuietly(path, 0o600)
+    if (this.#privateDir) await this.#chmodQuietly(dirname(path), 0o700)
     try {
       return { exists: true, raw: JSON.parse(text) as unknown }
     } catch (error) {
@@ -378,7 +415,9 @@ export class SettingsStore {
   async #writeNow(): Promise<void> {
     const target = this.#path
     if (!target) return
-    await mkdir(dirname(target), { recursive: true })
+    const dir = dirname(target)
+    await mkdir(dir, { recursive: true, ...(this.#privateDir ? { mode: 0o700 } : {}) })
+    if (this.#privateDir) await this.#chmodQuietly(dir, 0o700)
     const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
     try {
       await writeFile(tmp, JSON.stringify(this.#settings, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' })

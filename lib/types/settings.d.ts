@@ -32,6 +32,18 @@ export interface EffectiveEndpoint {
     baseUrl: string;
     apiKey: string;
 }
+/**
+ * What the settings page is allowed to see. The credential never travels to
+ * the browser: the page only learns whether one is stored, so a page that
+ * loads (or reloads) cannot leak it through the DOM, devtools, or an XSS in
+ * the host UI.
+ */
+export interface MagpieSettingsView {
+    baseUrl: string;
+    hasApiKey: boolean;
+    enabledModels?: string[];
+    inheritedModels: boolean;
+}
 export declare const SETTINGS_FILE = "settings.json";
 export declare function defaultSettingsPath(dataDir: string): string;
 /**
@@ -90,6 +102,7 @@ export declare class SettingsStore {
     constructor(options?: {
         path?: string;
         legacyPath?: string;
+        privateDir?: boolean;
     });
     /**
      * Read and normalize the persisted document without touching memory or disk.

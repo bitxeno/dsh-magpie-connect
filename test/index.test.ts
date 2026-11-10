@@ -170,11 +170,10 @@ test('apply registers the adapter and serves settings/models/test routes', async
   assert.equal(settings.status, 200)
   assert.deepEqual((settings.payload as { value: unknown }).value, {
     baseUrl: origin,
-    apiKey: 'test-key',
+    hasApiKey: true,
     inheritedModels: true,
-    fromPage: {},
-    fromPatch: { baseUrl: origin, apiKey: 'test-key' },
   })
+  assert.equal(JSON.stringify(settings.payload).includes('test-key'), false)
 
   const models = await callRoute(ctx.routes, MODELS_API, 'GET')
   const listed = (models.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id)
@@ -198,7 +197,7 @@ test('POST settings persists the allowlist, narrows the picker, and validates', 
   assert.equal((saved.payload as { ok: boolean }).ok, true)
   assert.deepEqual((saved.payload as { value: unknown }).value, {
     baseUrl: origin,
-    apiKey: 'test-key',
+    hasApiKey: true,
     enabledModels: ['b'],
     inheritedModels: false,
   })
@@ -230,15 +229,16 @@ test('an autosave that sends only enabledModels leaves credentials untouched', a
   assert.equal((autosaved.payload as { ok: boolean }).ok, true)
   assert.deepEqual((autosaved.payload as { value: unknown }).value, {
     baseUrl: origin,
-    apiKey: 'page-key',
+    hasApiKey: true,
     enabledModels: ['b'],
     inheritedModels: false,
   })
 
   const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')
-  const value = (settings.payload as { value: { apiKey: string; baseUrl: string } }).value
-  assert.equal(value.apiKey, 'page-key')
+  const value = (settings.payload as { value: { hasApiKey: boolean; baseUrl: string } }).value
+  assert.equal(value.hasApiKey, true)
   assert.equal(value.baseUrl, origin)
+  assert.equal(JSON.stringify(settings.payload).includes('page-key'), false)
 })
 
 test('test endpoint reports gateway failures instead of throwing', async (t) => {
@@ -276,6 +276,10 @@ test('missing apiKey gates the picker, saves, and the test probe', async (t) => 
 
   const probe = await callRoute(ctx.routes, TEST_API, 'POST', { baseUrl: origin })
   assert.equal((probe.payload as { ok: boolean }).ok, false)
+
+  const discovered = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: '   ' })
+  assert.equal((discovered.payload as { ok: boolean }).ok, false)
+  assert.match((discovered.payload as { error: string }).error, /apiKey is required/)
 
   // Saving a key completes the configuration: the picker fills on next refresh.
   const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { apiKey: 'k' })
@@ -393,9 +397,10 @@ test('discover reports gateway failures and a missing key instead of throwing', 
   assert.equal((refused.payload as { ok: boolean }).ok, false)
   const invalid = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: 'not a url' })
   assert.equal((invalid.payload as { ok: boolean }).ok, false)
-  const noKey = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: '   ' })
-  assert.equal((noKey.payload as { ok: boolean }).ok, false)
-  assert.match((noKey.payload as { error: string }).error, /apiKey is required/)
+  // A blank key means "use the stored one": older pages submit the field
+  // empty once the server stops echoing the credential back to them.
+  const blankKey = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: '   ' })
+  assert.equal((blankKey.payload as { ok: boolean }).ok, true)
 })
 
 test('the allowlist keeps an id the gateway no longer serves, harmlessly', async (t) => {
@@ -592,7 +597,7 @@ test('an unreachable gateway still lets a save answer (the refresh wait is bound
   const started = Date.now()
   const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: hanging, apiKey: 'test-key' })
   assert.equal((saved.payload as { ok: boolean }).ok, true)
-  assert.equal((saved.payload as { value: { apiKey: string } }).value.apiKey, 'test-key')
+  assert.equal((saved.payload as { value: { hasApiKey: boolean } }).value.hasApiKey, true)
   assert.ok(Date.now() - started < 30_000, 'the save answered without waiting out the gateway')
 })
 
@@ -622,4 +627,40 @@ test('startup warms the directory with the saved endpoint, not the defaults', as
   assert.equal(value.models.every((row) => row.source === 'gateway'), true)
   assert.equal(value.snapshot.status, 'ready')
   assert.equal(value.snapshot.total, 2)
+})
+
+test('settings responses redact the credential, and a blank key reuses the saved one', async (t) => {
+  const auth: Array<string | undefined> = []
+  const server = createServer((request, response) => {
+    auth.push(request.headers.authorization)
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(gatewayBody))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const origin = `http://127.0.0.1:${address.port}/v1`
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'patch-private-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-redact-')) })
+  await settled()
+
+  const initial = await callRoute(ctx.routes, SETTINGS_API, 'GET')
+  assert.equal((initial.payload as { value: { hasApiKey: boolean } }).value.hasApiKey, true)
+  assert.equal(JSON.stringify(initial.payload).includes('patch-private-key'), false)
+
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: origin, apiKey: 'page-private-key' })
+  assert.equal((saved.payload as { value: { hasApiKey: boolean } }).value.hasApiKey, true)
+  assert.equal(JSON.stringify(saved.payload).includes('page-private-key'), false)
+
+  // An older client may still submit the credential field while leaving it
+  // blank ("unchanged"): the stored key must survive that save.
+  const unchanged = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: origin, apiKey: '' })
+  assert.equal((unchanged.payload as { ok: boolean }).ok, true)
+  for (const route of [TEST_API, DISCOVER_API]) {
+    const result = await callRoute(ctx.routes, route, 'POST', { baseUrl: origin, apiKey: '' })
+    assert.equal((result.payload as { ok: boolean }).ok, true)
+    assert.equal(auth.at(-1), 'Bearer page-private-key')
+  }
 })

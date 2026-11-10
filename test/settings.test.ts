@@ -364,3 +364,48 @@ test('concurrent saves from two stores do not clobber each other', async () => {
   assert.ok(['http://a/v1', 'http://b/v1'].includes(onDisk.baseUrl))
   assert.ok(['ka', 'kb'].includes(onDisk.apiKey))
 })
+
+test('the plugin-owned state directory and settings file stay private', { skip: process.platform === 'win32' }, async () => {
+  const { statSync, chmodSync } = await import('node:fs')
+  const root = mkdtempSync(join(tmpdir(), 'magpie-private-'))
+  const dir = join(root, 'state')
+  const path = join(dir, 'settings.json')
+  const previous = process.umask(0o022)
+  try {
+    const store = new SettingsStore({ path, privateDir: true })
+    await store.save({ baseUrl: 'http://gw/v1', apiKey: 'private-gateway-key' })
+    assert.equal(statSync(dir).mode & 0o777, 0o700)
+    assert.equal(statSync(path).mode & 0o777, 0o600)
+
+    // A file written by an older version (permissive umask) is repaired on
+    // read, and a later save keeps it private.
+    chmodSync(path, 0o644)
+    chmodSync(dir, 0o755)
+    const reopened = new SettingsStore({ path, privateDir: true })
+    assert.equal((await reopened.read()).apiKey, 'private-gateway-key')
+    assert.equal(statSync(dir).mode & 0o777, 0o700)
+    assert.equal(statSync(path).mode & 0o777, 0o600)
+    await reopened.save({ enabledModels: ['a'] })
+    assert.equal(statSync(path).mode & 0o777, 0o600)
+
+    // Creating a missing directory directly applies the same mode.
+    const fresh = join(root, 'fresh', 'settings.json')
+    await new SettingsStore({ path: fresh, privateDir: true }).save({ apiKey: 'k' })
+    assert.equal(statSync(join(root, 'fresh')).mode & 0o777, 0o700)
+    assert.equal(statSync(fresh).mode & 0o777, 0o600)
+  } finally {
+    process.umask(previous)
+  }
+})
+
+test("an explicit dataDir keeps the user's directory permissions", { skip: process.platform === 'win32' }, async () => {
+  const { statSync, chmodSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-explicit-'))
+  chmodSync(dir, 0o755)
+  const path = join(dir, 'settings.json')
+  const store = new SettingsStore({ path })
+  await store.save({ apiKey: 'k' })
+  // The directory belongs to the user; only the credential file is tightened.
+  assert.equal(statSync(dir).mode & 0o777, 0o755)
+  assert.equal(statSync(path).mode & 0o777, 0o600)
+})

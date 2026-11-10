@@ -19,6 +19,7 @@ import {
   normalizeBaseUrl,
   normalizePageSettings,
   resolveEffectiveEndpoint,
+  type MagpieSettingsView,
 } from './settings.ts'
 
 /**
@@ -207,19 +208,43 @@ interface RouteDefinition {
   fetch: (request: Request) => Promise<Response>
 }
 
+/**
+ * The only settings shape the browser may see. The credential is represented
+ * by its presence, never by its value; `fromPage`/`fromPatch` are gone for the
+ * same reason — both carried the gateway key.
+ */
+function settingsView(backend: SettingsBackend): MagpieSettingsView {
+  const page = backend.store.get()
+  const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
+  return {
+    baseUrl: endpoint.baseUrl,
+    hasApiKey: endpoint.apiKey !== '',
+    enabledModels: page.enabledModels,
+    inheritedModels: page.enabledModels === undefined,
+  }
+}
+
+/**
+ * Accept an older client's payload that still includes the credential field
+ * but left it blank ("keep the saved key"). The field is dropped so the save
+ * merges instead of failing validation. A blank key with nothing stored is
+ * still an error: there is no credential to keep.
+ */
+function stripBlankApiKey(backend: SettingsBackend, body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body
+  const record = body as Record<string, unknown>
+  if (typeof record.apiKey !== 'string' || record.apiKey.trim() !== '') return body
+  if (resolveEffectiveEndpoint(backend.patchEndpoint, backend.store.get()).apiKey === '') {
+    throw new Error('dsh-magpie-connect: apiKey is required and must not be empty')
+  }
+  const rest = { ...record }
+  delete rest.apiKey
+  return rest
+}
+
 async function handleSettingsGet(): Promise<Response> {
   try {
-    const backend = backendOrThrow()
-    const page = backend.store.get()
-    const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
-    return routeOk({
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      enabledModels: page.enabledModels,
-      inheritedModels: page.enabledModels === undefined,
-      fromPage: page,
-      fromPatch: backend.patchEndpoint,
-    })
+    return routeOk(settingsView(backendOrThrow()))
   } catch (error) {
     return routeFail(error)
   }
@@ -229,13 +254,13 @@ async function handleSettingsPost(request: Request): Promise<Response> {
   try {
     const backend = backendOrThrow()
     const body = await readRouteBody(request)
-    const normalized = normalizePageSettings(body)
-    // The submitted hidden set is stored **as submitted**. Dropping ids the
+    const normalized = normalizePageSettings(stripBlankApiKey(backend, body))
+    // The submitted allowlist is stored **as submitted**. Dropping ids the
     // current directory does not list would silently undo a delete: a lane's
-    // models come and go between refreshes, so the two ids removed while the
+    // models come and go between refreshes, so the ids removed while the
     // gateway happened to be un-listing them would be forgotten, then reappear
     // in the picker on the next refresh that listed them again.
-    const saved = await backend.store.save(normalized)
+    await backend.store.save(normalized)
     backend.applyPageSettings()
     // A save can move the endpoint (or just the key), so re-read the directory
     // before answering: the page re-reads rows right after this response, and a
@@ -251,13 +276,7 @@ async function handleSettingsPost(request: Request): Promise<Response> {
         new Promise((resolve) => setTimeout(resolve, SAVE_REFRESH_WAIT_MS)),
       ])
     }
-    const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, saved)
-    return routeOk({
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      enabledModels: saved.enabledModels,
-      inheritedModels: saved.enabledModels === undefined,
-    })
+    return routeOk(settingsView(backend))
   } catch (error) {
     return routeFail(error)
   }
@@ -279,8 +298,11 @@ function probeTarget(
 ): { origin: string; key: string } {
   const effective = backend.effective()
   const origin = normalizeBaseUrl(body.baseUrl ?? effective.baseUrl)
-  const rawKey = typeof body.apiKey === 'string' ? body.apiKey : effective.apiKey
-  const key = rawKey.trim()
+  // A blank field means "use the saved key": older pages echoed the
+  // credential into the form, and a blank submit must keep working now that
+  // the server no longer sends it back.
+  const typed = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+  const key = typed === '' ? effective.apiKey.trim() : typed
   if (key === '') throw new Error('dsh-magpie-connect: apiKey is required — fill it in before asking the gateway')
   return { origin, key }
 }
@@ -475,6 +497,9 @@ export function apply(
   const store = new SettingsStore({
     path: defaultSettingsPath(dataDir),
     legacyPath: config.dataDir === undefined ? join(legacyDataDir(), 'settings.json') : undefined,
+    // Only the plugin-owned default directory is chmod-ed; an explicit
+    // `dataDir` belongs to the user and is left as they set it.
+    privateDir: config.dataDir === undefined,
   })
   const patchEndpoint = { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey }
   const effective = () => resolveEffectiveEndpoint(patchEndpoint, store.get())

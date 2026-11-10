@@ -4,6 +4,7 @@ import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { createWriteQueue } from './write-queue.ts'
 import { PENDING_RETRY_DELAY_MS, shouldRetryPending, type SnapshotStatus } from './load-retry.ts'
+import type { MagpieSettingsView } from '../settings.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
@@ -110,6 +111,8 @@ export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
+  /** Whether a key is stored server-side; the value itself never reaches the page. */
+  const [hasApiKey, setHasApiKey] = useState(false)
   /** `undefined` = inherit the gateway directory; an array = exactly those ids. */
   const [enabled, setEnabled] = useState<string[] | undefined>(undefined)
   const [models, setModels] = useState<ModelRow[]>([])
@@ -177,14 +180,14 @@ export function MagpieSettings(): unknown {
         request('/api/magpie-models'),
       ])
       if (!alive) return
-      const settings = settingsValue as { baseUrl: string; apiKey: string; enabledModels?: string[] }
+      const settings = settingsValue as MagpieSettingsView
       const listed = (modelsValue as { models: ModelRow[] }).models ?? []
       const snapshot = (modelsValue as { snapshot?: SnapshotStatus }).snapshot
       // A slow first read must not clobber what the user typed meanwhile.
-      if (!credentialsDirty.current) {
-        setBaseUrl(settings.baseUrl ?? '')
-        setApiKey(settings.apiKey ?? '')
-      }
+      if (!credentialsDirty.current) setBaseUrl(settings.baseUrl ?? '')
+      // The credential never comes back; only whether one exists. The input
+      // stays empty and its placeholder says the saved key will be kept.
+      setHasApiKey(settings.hasApiKey === true)
       setEnabled(settings.enabledModels)
       setModels(listed)
       setLoaded(true)
@@ -210,7 +213,7 @@ export function MagpieSettings(): unknown {
   }, [])
 
   const fetchCandidates = async (): Promise<readonly CandidateRow[]> => {
-    const result = (await request('/api/magpie-discover', 'POST', { baseUrl, apiKey })) as { models: CandidateRow[] }
+    const result = (await request('/api/magpie-discover', 'POST', { baseUrl, ...(apiKey.trim() === '' ? {} : { apiKey }) })) as { models: CandidateRow[] }
     return result.models ?? []
   }
 
@@ -247,15 +250,13 @@ export function MagpieSettings(): unknown {
     try {
       const saved = (await request('/api/magpie-settings', 'POST', {
         baseUrl,
-        apiKey,
+        ...(apiKey.trim() === '' ? {} : { apiKey }),
         ...(enabled === undefined ? {} : { enabledModels: enabled }),
-      })) as {
-        baseUrl: string
-        apiKey: string
-        enabledModels?: string[]
-      }
+      })) as MagpieSettingsView
       setBaseUrl(saved.baseUrl)
-      setApiKey(saved.apiKey)
+      setHasApiKey(saved.hasApiKey)
+      // Never keep the typed secret in component state after it is stored.
+      setApiKey('')
       // Adopt what the server stored, without queueing a write of its own —
       // that would be a pointless echo of what just landed. The set comes back
       // as submitted: the store no longer drops ids the directory omits.
@@ -276,7 +277,7 @@ export function MagpieSettings(): unknown {
     setError(undefined)
     setNotice(undefined)
     try {
-      const result = (await request('/api/magpie-test', 'POST', { baseUrl, apiKey })) as { count: number }
+      const result = (await request('/api/magpie-test', 'POST', { baseUrl, ...(apiKey.trim() === '' ? {} : { apiKey }) })) as { count: number }
       setNotice(text('testOk', { count: result.count }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -286,7 +287,7 @@ export function MagpieSettings(): unknown {
   }
 
   const working = busy !== 'idle'
-  const incomplete = baseUrl.trim() === '' || apiKey.trim() === ''
+  const incomplete = baseUrl.trim() === '' || (!hasApiKey && apiKey.trim() === '')
 
   return (
     <section style={css.section}>
@@ -323,7 +324,7 @@ export function MagpieSettings(): unknown {
         </div>
         <div style={css.field}>
           <span style={css.label}>{text('apiKey')}</span>
-          <Input type="password" value={apiKey} placeholder={text('apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => { credentialsDirty.current = true; setApiKey(event.currentTarget.value) }} />
+          <Input type="password" value={apiKey} placeholder={text(hasApiKey ? 'apiKeySavedPlaceholder' : 'apiKeyPlaceholder')} disabled={working} onChange={(event: { currentTarget: { value: string } }) => { credentialsDirty.current = true; setApiKey(event.currentTarget.value) }} />
         </div>
         <div style={css.row}>
           <Button variant="primary" disabled={working || incomplete} onClick={() => void save()}>
