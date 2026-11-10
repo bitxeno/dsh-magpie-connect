@@ -95,7 +95,9 @@ type FetchRegister = (route: {
 }) => () => void | Promise<void>
 
 interface ModelRow {
+  /** Route id, used by the allowlist, requests and session history. */
   id: string
+  /** `<group>/<display_name>` label the settings list and picker show. */
   displayName: string
   contextWindow?: number
   maxTokens?: number
@@ -123,6 +125,15 @@ function responsesOnlyFor(nativeEndpoints: readonly string[]): boolean {
   if (nativeEndpoints.length === 0) return false
   const hasCompletions = nativeEndpoints.some((endpoint) => endpoint.includes('/chat/completions'))
   return !hasCompletions && nativeEndpoints.some((endpoint) => endpoint.includes('/responses'))
+}
+
+/**
+ * Both model lists are sorted by the label the user sees. Grouping models by
+ * `<group>/<display_name>` keeps one gateway lane's models together; the id is a
+ * tie-break so two models with the same label still have a stable order.
+ */
+function compareModelRows(left: CandidateRow, right: CandidateRow): number {
+  return left.displayName.localeCompare(right.displayName, 'zh') || left.id.localeCompare(right.id)
 }
 
 /** Project one catalog entry (or a bare id) into the wire row the page renders. */
@@ -182,11 +193,13 @@ function buildModelRows(backend: SettingsBackend): ModelRow[] {
   const { store, catalog } = backend
   const allowlist = store.get().enabledModels
   const allowed = allowlist === undefined ? undefined : new Set(allowlist)
-  return catalog.directory().sort().map((id) => ({
-    ...toRow(id, catalog.getEntry(id)),
-    enabled: allowed === undefined || allowed.has(id),
-    source: catalog.sourceFor(id),
-  }))
+  return catalog.directory()
+    .map((id) => ({
+      ...toRow(id, catalog.getEntry(id)),
+      enabled: allowed === undefined || allowed.has(id),
+      source: catalog.sourceFor(id),
+    }))
+    .sort(compareModelRows)
 }
 
 function backendOrThrow(): SettingsBackend {
@@ -354,8 +367,8 @@ async function handleDiscoverPost(request: Request): Promise<Response> {
     // model already gone from the dialog kept showing in the settings list.
     backend.catalog.adoptDirectory(models)
     const candidates = [...models.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, entry]) => toRow(id, entry))
+      .sort(compareModelRows)
     return routeOk({ count: candidates.length, models: candidates })
   } catch (error) {
     return hintGatewayFailure(error)

@@ -129,6 +129,42 @@ export function modelApiForEntry(nativeEndpoints: readonly string[]): 'openai-co
   return requiresResponsesApiEntry(nativeEndpoints) ? 'openai-responses' : 'openai-completions'
 }
 
+/** The gateway separates a model name from its group with a middle dot. */
+const LABEL_GROUP_SEPARATOR = '\u00B7'
+
+/** Capitalize only the first character; preserve the rest of a gateway/id group. */
+function capitalizeGroup(group: string): string {
+  return group.length === 0 ? '' : group[0]!.toLocaleUpperCase() + group.slice(1)
+}
+
+/** Derive a fallback group from the id's first slash-delimited segment. */
+function groupFromId(id: string): string {
+  const prefix = id.split('/', 1)[0]?.trim() ?? ''
+  return capitalizeGroup(prefix)
+}
+
+/**
+ * The one label both the DSH model picker and this plugin's settings page show.
+ * The model name is exactly `display_name`. Prefer the group after the last
+ * middle dot in `magpie_label`; if it is absent or empty, capitalize the first
+ * character of the id's first path segment as the fallback group.
+ */
+export function displayNameFor(raw: Record<string, unknown>): string {
+  const id = typeof raw.id === 'string' ? raw.id : ''
+  const name = typeof raw.display_name === 'string' ? raw.display_name.trim() : ''
+  if (name === '') return id
+  const label = typeof raw.magpie_label === 'string' ? raw.magpie_label.trim() : ''
+  const at = label.lastIndexOf(LABEL_GROUP_SEPARATOR)
+  const parsedGroup = at >= 0 ? label.slice(at + 1).trim() : ''
+  const idGroup = groupFromId(id)
+  // Routing ids are the source of truth for these two lanes; their gateway
+  // label group is generic and must not replace the explicit route prefix.
+  const routingPrefix = id.startsWith('auto/') || id.startsWith('group/')
+  const group = routingPrefix ? idGroup : parsedGroup || idGroup
+  if (group === '') return id
+  return `${group}/${name}`
+}
+
 /** Decode one gateway model object into a catalog entry. */
 export function decodeModel(raw: unknown): MagpieModelEntry | undefined {
   if (!raw || typeof raw !== 'object') return undefined
@@ -137,10 +173,7 @@ export function decodeModel(raw: unknown): MagpieModelEntry | undefined {
   if (typeof id !== 'string' || id.length === 0) return undefined
   const num = (value: unknown): number | undefined =>
     typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined
-  const displayName =
-    (typeof record.display_name === 'string' && record.display_name) ||
-    (typeof record.magpie_label === 'string' && record.magpie_label) ||
-    id
+  const displayName = displayNameFor(record)
   const contextWindow = num(record.context_window) ?? num(record.context_length) ?? num(record.max_input_tokens)
   const maxTokens = num(record.max_output_tokens)
   const modalities = record.modalities as { input?: unknown } | undefined
@@ -174,8 +207,12 @@ export function decodeMagpieModels(data: unknown): Map<string, MagpieModelEntry>
  * Compile-time static snapshot (observed 2026-10-02, 22 models): last-resort
  * bootstrap while the gateway is unreachable. Refreshed by hand when the
  * gateway catalog changes shape; live data always wins when reachable.
+ *
+ * These rows have no `magpie_label`, so their group comes from the id prefix
+ * and their curated model name is retained. Live data still uses the same
+ * `displayNameFor` rule.
  */
-export const staticMagpieModels: MagpieModelEntry[] = [
+const staticMagpieModelSeeds: MagpieModelEntry[] = [
   { id: 'group/auto-gpt-4-1', displayName: 'GPT-4.1', contextWindow: 1047576, maxTokens: 32768, image: true, nativeEndpoints: [], reasoning: false },
   { id: 'group/auto-gpt-6-luna', displayName: 'GPT-6-Luna', contextWindow: 272000, maxTokens: 128000, image: true, nativeEndpoints: [], reasoning: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { id: 'vercel/xiaomi/mimo-v2.6-flash', displayName: 'xiaomi/mimo-v2.6-flash', contextWindow: 1048576, maxTokens: 131072, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true },
@@ -199,6 +236,12 @@ export const staticMagpieModels: MagpieModelEntry[] = [
   { id: 'workbuddy-ai/hy4-preview-f', displayName: 'hy4-preview-f', contextWindow: 1000000, maxTokens: 64000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['high'] },
   { id: 'workbuddy-ai/deepseek-v4.1-flash', displayName: 'deepseek-v4.1-flash', contextWindow: 1000000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/chat/completions'], reasoning: true, efforts: ['low', 'high', 'max'] },
 ]
+
+/** The exported snapshot, with each label derived by the one display-name rule. */
+export const staticMagpieModels: MagpieModelEntry[] = staticMagpieModelSeeds.map((entry) => ({
+  ...entry,
+  displayName: displayNameFor({ id: entry.id, display_name: entry.displayName }),
+}))
 
 export interface CatalogSnapshot {
   status: 'pending' | 'ready' | 'stale' | 'error'
@@ -666,13 +709,17 @@ export async function fetchMagpieModels(
   return models
 }
 
+/** Cache schema v3: labels now use display_name plus parsed/id-derived group. */
+const MODELS_CACHE_VERSION = 3
+
 interface ModelsCache {
+  version: number
   updatedAt: number
   entries: MagpieModelEntry[]
 }
 
 async function saveModelsCache(path: string, entries: Map<string, MagpieModelEntry>, now: number): Promise<void> {
-  const cache: ModelsCache = { updatedAt: now, entries: [...entries.values()] }
+  const cache: ModelsCache = { version: MODELS_CACHE_VERSION, updatedAt: now, entries: [...entries.values()] }
   // Same atomic-replace discipline as SettingsStore: random-suffix sibling,
   // rename over the target, no `rm` window. The cache is reproducible, so a
   // lost write is harmless — but a half-written file is not worth risking.
@@ -691,7 +738,15 @@ async function loadModelsCache(path: string): Promise<Map<string, MagpieModelEnt
   if (Date.now() - raw.updatedAt > 7 * 24 * 60 * 60 * 1000) {
     throw new Error('gateway cache too old')
   }
-  return new Map(raw.entries.map((entry) => [entry.id, entry]))
+  const legacy = raw.version !== MODELS_CACHE_VERSION
+  return new Map(raw.entries.map((entry) => {
+    // A legacy cache has no raw gateway fields to recompute the new label
+    // from. Preserve ids and capabilities, and use id as the label until a
+    // successful refresh replaces them. This avoids falling back to the stale
+    // compile-time snapshot offline.
+    const relabeled = legacy ? { ...entry, displayName: entry.id } : entry
+    return [entry.id, relabeled]
+  }))
 }
 
 /** Default cache location next to the plugin data dir (index.ts convention). */

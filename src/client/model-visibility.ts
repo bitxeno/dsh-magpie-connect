@@ -19,7 +19,9 @@ export type ModelSource = 'gateway' | 'static' | 'none'
 
 /** One model row as the models route reports it. */
 export interface ModelRow {
+  /** Route id: what requests, session history and the allowlist carry. */
   id: string
+  /** `<group>/<display_name>` label shown in both model lists. */
   displayName: string
   contextWindow?: number
   maxTokens?: number

@@ -12,6 +12,7 @@ const gatewayBody = {
     {
       id: 'a',
       display_name: 'A',
+      magpie_label: 'A · Alpha',
       context_window: 100000,
       max_output_tokens: 8000,
       modalities: { input: ['text', 'image'] },
@@ -22,6 +23,7 @@ const gatewayBody = {
     {
       id: 'b',
       display_name: 'B',
+      magpie_label: 'B · Beta',
       context_window: 200000,
       max_output_tokens: 16000,
       modalities: { input: ['text'] },
@@ -176,8 +178,12 @@ test('apply registers the adapter and serves settings/models/test routes', async
   assert.equal(JSON.stringify(settings.payload).includes('test-key'), false)
 
   const models = await callRoute(ctx.routes, MODELS_API, 'GET')
-  const listed = (models.payload as { value: { models: Array<{ id: string }> } }).value.models.map((row) => row.id)
+  const rows = (models.payload as { value: { models: Array<{ id: string; displayName: string }> } }).value.models
+  const listed = rows.map((row) => row.id)
   assert.deepEqual(listed, ['a', 'b'])
+  // The settings list is sorted by the visible label, not the id, and both
+  // rows carry the `<group>/<name>` form built from magpie_label.
+  assert.deepEqual(rows.map((row) => row.displayName), ['Alpha/A', 'Beta/B'])
 
   const probed = await callRoute(ctx.routes, TEST_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
   assert.equal((probed.payload as { ok: boolean }).ok, true)
@@ -360,10 +366,43 @@ test('discover returns full candidate rows for the fetch dialog', async (t) => {
   const a = value.models.find((row) => row.id === 'a')
   assert.equal(a?.image, true)
   assert.equal(a?.contextWindow, 100000)
+  assert.equal(a?.displayName, 'Alpha/A')
   const b = value.models.find((row) => row.id === 'b')
+  assert.equal(b?.displayName, 'Beta/B')
   assert.equal(b?.responsesOnly, true)
   assert.equal(b?.reasoning, true)
   assert.deepEqual(b?.efforts, ['low', 'medium'])
+})
+
+test('both model lists are sorted by displayName and fall back to id on a missing label', async (t) => {
+  // Id order is z, a; label order is Zebra, Alpha — the opposite, so a list
+  // still sorted by id would fail. `c` has no magpie_label at all: it must
+  // show the bare id rather than a partial label.
+  const body = {
+    data: [
+      { id: 'z', display_name: 'Zulu', magpie_label: 'Zulu · Zebra', native_endpoints: ['/v1/chat/completions'], reasoning: false },
+      { id: 'a', display_name: 'Able', magpie_label: 'Able · Alpha', native_endpoints: ['/v1/chat/completions'], reasoning: false },
+      { id: 'c', display_name: 'Charlie', magpie_label: 'Charlie ·   ', native_endpoints: ['/v1/chat/completions'], reasoning: false },
+      { id: 'd', display_name: 'Delta', native_endpoints: ['/v1/chat/completions'], reasoning: false },
+    ],
+  }
+  const { server, origin } = await withServer(body)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const listed = await callRoute(ctx.routes, MODELS_API, 'GET')
+  const rows = (listed.payload as { value: { models: Array<{ id: string; displayName: string }> } }).value.models
+  assert.deepEqual(rows.map((row) => row.displayName), ['Alpha/Able', 'C/Charlie', 'D/Delta', 'Zebra/Zulu'])
+
+  const found = await callRoute(ctx.routes, DISCOVER_API, 'POST', { baseUrl: origin, apiKey: 'test-key' })
+  const candidates = (found.payload as { value: { models: Array<{ id: string; displayName: string }> } }).value.models
+  assert.deepEqual(candidates.map((row) => row.displayName), ['Alpha/Able', 'C/Charlie', 'D/Delta', 'Zebra/Zulu'])
+  // A missing/empty group never leaks a dangling slash or a short name.
+  assert.equal(rows.find((row) => row.id === 'c')?.displayName, 'C/Charlie')
+  assert.equal(rows.find((row) => row.id === 'd')?.displayName, 'D/Delta')
 })
 
 test('discover asks the endpoint the form shows, not the saved one', async (t) => {

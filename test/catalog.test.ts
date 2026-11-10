@@ -4,6 +4,7 @@ import {
   canonicalEfforts,
   decodeMagpieModels,
   decodeModel,
+  displayNameFor,
   effortsFor,
   fetchMagpieModels,
   ModelCatalog,
@@ -28,6 +29,7 @@ const gatewayBody = {
     {
       id: 'vercel/openai/gpt-4.1',
       display_name: 'openai/gpt-4.1',
+      magpie_label: 'openai/gpt-4.1 · Vercel',
       context_window: 1047576,
       max_output_tokens: 32768,
       modalities: { input: ['text', 'image'] },
@@ -38,6 +40,7 @@ const gatewayBody = {
     {
       id: 'opencode-zen/muse-spark-1.3-contributor-free',
       display_name: 'Muse Spark 1.3 Free',
+      magpie_label: 'Muse Spark 1.3 Free · OpenCode Zen',
       context_window: 1048576,
       max_output_tokens: 131072,
       modalities: { input: ['text', 'image'] },
@@ -48,6 +51,7 @@ const gatewayBody = {
     {
       id: 'codex/gpt-5.6-terra',
       display_name: 'GPT-5.6-Terra',
+      magpie_label: 'GPT-5.6-Terra · Codex',
       context_window: 272000,
       max_output_tokens: 128000,
       modalities: { input: ['text', 'image'] },
@@ -58,6 +62,7 @@ const gatewayBody = {
     {
       id: 'opencode-zen/jev-1.13-free',
       display_name: 'jev-1.13-free',
+      magpie_label: 'jev-1.13-free · OpenCode Zen',
       native_endpoints: ['/v1/chat/completions', '/v1/responses', '/v1/messages'],
       reasoning: false,
       supported_reasoning_levels: [],
@@ -81,10 +86,46 @@ test('canonicalEfforts dedupes and orders canonically (none first, ultra last)',
   assert.deepEqual(canonicalEfforts(undefined), undefined)
 })
 
+test('displayNameFor uses display_name and prefers the parsed magpie group', () => {
+  assert.equal(
+    displayNameFor({ id: 'codex/gpt-6-luna', display_name: 'GPT-6-Luna', magpie_label: 'GPT-6-Luna · Codex' }),
+    'Codex/GPT-6-Luna',
+  )
+  assert.equal(
+    displayNameFor({ id: 'workbuddy-ai/hy4free', display_name: 'Hy4', magpie_label: 'Hy4 · WorkBuddy AI' }),
+    'WorkBuddy AI/Hy4',
+  )
+  // A short name containing the separator: split at the last one, then use
+  // display_name directly (even when it differs from the label's left half).
+  assert.equal(
+    displayNameFor({ id: 'x/y', display_name: 'Canonical Name', magpie_label: 'A · B · Qoder' }),
+    'Qoder/Canonical Name',
+  )
+})
+
+test('displayNameFor falls back to a capitalized id group when magpie group is absent', () => {
+  assert.equal(displayNameFor({ id: 'codex/gpt-6-luna', display_name: 'GPT-6-Luna' }), 'Codex/GPT-6-Luna')
+  assert.equal(displayNameFor({ id: 'workbuddy-ai/hy4free', display_name: 'Hy4', magpie_label: 'Hy4 ·   ' }), 'Workbuddy-ai/Hy4')
+  assert.equal(displayNameFor({ id: 'auto/gpt-6-luna', display_name: 'GPT-6 Luna' }), 'Auto/GPT-6 Luna')
+  assert.equal(displayNameFor({ id: 'auto/gpt-6-luna', display_name: 'GPT-6 Luna', magpie_label: 'GPT-6 Luna · routing group' }), 'Auto/GPT-6 Luna')
+  assert.equal(displayNameFor({ id: 'group/free', display_name: 'free', magpie_label: 'free · routing group' }), 'Group/free')
+  assert.equal(displayNameFor({ id: 'group/free', display_name: 'free', magpie_label: 'free · Better Name' }), 'Group/free')
+  assert.equal(displayNameFor({ id: 'autodev/x', display_name: 'X', magpie_label: 'X · AutoDev' }), 'AutoDev/X')
+  assert.equal(displayNameFor({ id: '/x', display_name: 'X', magpie_label: 'X · ' }), '/x')
+})
+
+test('displayNameFor uses display_name exactly and falls back to id if it is absent', () => {
+  assert.equal(displayNameFor({ id: 'codex/gpt-6-luna', magpie_label: 'GPT-6 · Codex' }), 'codex/gpt-6-luna')
+  assert.equal(displayNameFor({ id: 'codex/gpt-6-luna', display_name: '', magpie_label: 'GPT-6 · Codex' }), 'codex/gpt-6-luna')
+  assert.equal(displayNameFor({ id: 'a/b', display_name: 'Nice Name', magpie_label: 42 as unknown }), 'A/Nice Name')
+  assert.equal(displayNameFor({ id: 'x', display_name: 'X' }), 'X/X')
+})
+
+
 test('decodeModel reads gateway fields with fallbacks', () => {
   const chat = decodeModel(gatewayBody.data[0])
   assert.equal(chat?.id, 'vercel/openai/gpt-4.1')
-  assert.equal(chat?.displayName, 'openai/gpt-4.1')
+  assert.equal(chat?.displayName, 'Vercel/openai/gpt-4.1')
   assert.equal(chat?.contextWindow, 1047576)
   assert.equal(chat?.maxTokens, 32768)
   assert.equal(chat?.image, true)
@@ -250,7 +291,47 @@ test('ModelCatalog falls back to the static snapshot while the gateway is down',
   assert.equal(catalog.snapshot().status, 'pending')
   assert.equal(catalog.thinks('codex/gpt-5.6-terra'), true)
   assert.deepEqual(catalog.reasoningFor('codex/gpt-5.6-terra')?.efforts.map((e) => e.id), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+  // Snapshot rows have no gateway group, so they use the id's first segment
+  // as the group and retain their curated model name.
+  assert.equal(staticMagpieModels.find((entry) => entry.id === 'codex/gpt-6-luna')?.displayName, 'Codex/GPT-6-Luna')
   catalog.stop()
+})
+
+test('a legacy on-disk cache keeps its ids but shows bare-id labels', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-cache-'))
+  const cachePath = join(dir, 'magpie-models.json')
+  // Written by an older build: no `version`, bare short names as displayName.
+  const oldEntry = { id: 'codex/gpt-6-luna', displayName: 'GPT-6-Luna', contextWindow: 272000, maxTokens: 128000, image: true, nativeEndpoints: ['/v1/responses'], reasoning: true }
+  writeFileSync(cachePath, JSON.stringify({ updatedAt: Date.now(), entries: [oldEntry] }))
+  try {
+    const fail = (async () => {
+      throw new Error('network down')
+    }) as typeof fetch
+    const catalog = new ModelCatalog({ fetchImpl: fail, baseUrl: 'http://127.0.0.1:3425/v1', cachePath })
+    await catalog.refreshOnce()
+    // Ids and capabilities survive; the stale bare name is replaced by the id.
+    assert.equal(catalog.getEntry('codex/gpt-6-luna')?.displayName, 'codex/gpt-6-luna')
+    assert.equal(catalog.getEntry('codex/gpt-6-luna')?.contextWindow, 272000)
+    catalog.stop()
+
+    // A successful refresh rewrites the cache with the new schema + labels.
+    const live = new ModelCatalog({
+      fetchImpl: fakeFetch({ 'http://127.0.0.1:3425/v1/models': { data: [{ id: 'codex/gpt-6-luna', display_name: 'GPT-6-Luna', magpie_label: 'GPT-6-Luna · Codex', native_endpoints: ['/v1/responses'], reasoning: true }] } }),
+      baseUrl: 'http://127.0.0.1:3425/v1',
+      cachePath,
+    })
+    await live.refreshOnce()
+    assert.equal(live.getEntry('codex/gpt-6-luna')?.displayName, 'Codex/GPT-6-Luna')
+    const saved = JSON.parse(readFileSync(cachePath, 'utf8')) as { version: number; entries: Array<{ displayName: string }> }
+    assert.equal(saved.version, 3)
+    assert.equal(saved.entries[0]?.displayName, 'Codex/GPT-6-Luna')
+    live.stop()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('start() fast-retries while the live catalog is empty, then settles', async () => {

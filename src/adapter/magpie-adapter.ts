@@ -296,8 +296,10 @@ export class MagpieAdapter {
   }
 
   /**
-   * Picker label: the gateway's display_name ("Claude Haiku 5.5"), else the id. The id itself stays
-   * the route id (`claude/claude-haiku-5-5`) for requests and session history.
+   * Picker label: the catalog's `<group>/<display_name>` label
+   * (e.g. "Codex/GPT-6-Luna"); the group comes from `magpie_label` or falls
+   * back to the capitalized first id segment. The id itself stays the route id
+   * (`codex/gpt-6-luna`) for requests and session history.
    */
   #labelFor(id: string): string {
     const label = this.#catalog.getEntry?.(id)?.displayName

@@ -87,7 +87,9 @@ const css: Record<string, Record<string, string | number>> = {
   item: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'transparent' },
   removeButton: { border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', padding: '3px 10px', borderRadius: 6, fontSize: 12, lineHeight: '18px', flex: 'none' },
   itemMain: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 },
-  itemId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  // The visible label is `<group>/<name>`; the raw route id is only a hover
+  // title, so the list reads cleanly while the allowlist key stays inspectable.
+  itemId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' },
   chips: { display: 'flex', gap: 6, flexWrap: 'wrap' },
   chip: { fontSize: 11, lineHeight: '18px', padding: '0 7px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' },
   // A row the live gateway does not list is informational, not a capability the
@@ -102,7 +104,7 @@ const css: Record<string, Record<string, string | number>> = {
   candidateLabel: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer' },
   candidateCheckbox: { width: 15, height: 15, accentColor: 'var(--dsw-alias-brand-primary)', flex: 'none', cursor: 'pointer' },
   candidateText: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 },
-  candidateId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+  candidateId: { fontSize: 13, lineHeight: '20px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' },
   candidateEmpty: { margin: '24px 0', textAlign: 'center', fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' },
 }
 
@@ -284,7 +286,9 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
           return (
             <div key={row.id} style={css.item}>
               <span style={css.itemMain}>
-                <span style={css.itemId}>{row.id}</span>
+                <span style={css.itemId} title={row.id}>
+                  {row.displayName}
+                </span>
                 <span style={css.chips}>
                   {chipsFor(row).map((chip) => (
                     <span key={chip.key} style={css.chip}>
@@ -376,13 +380,11 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
                   />
                   <span style={css.candidateText}>
                     <span style={css.candidateId} title={candidate.id}>
-                      {candidate.id}
+                      {candidate.displayName}
                     </span>
-                    {/* Second line, mirroring the list's rows: the chips read as
-                        metadata under the id rather than competing with it. The
-                        gateway's display name is deliberately not shown — it is
-                        always present, and for every model this deployment
-                        serves it only respells the id. */}
+                    {/* Second line, mirroring the list's rows: capability chips
+                        under the `<group>/<name>` label. The raw route id is
+                        only a hover title, so both lists read the same way. */}
                     <span style={css.chips}>
                       {chipsFor(candidate).map((chip) => (
                         <span key={chip.key} style={css.chip}>

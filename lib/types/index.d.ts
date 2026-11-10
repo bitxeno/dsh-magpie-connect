@@ -63,7 +63,9 @@ export interface SettingsBackend {
     applyPageSettings: () => void;
 }
 interface ModelRow {
+    /** Route id, used by the allowlist, requests and session history. */
     id: string;
+    /** `<group>/<display_name>` label the settings list and picker show. */
     displayName: string;
     contextWindow?: number;
     maxTokens?: number;

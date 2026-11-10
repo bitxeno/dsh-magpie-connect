@@ -70,15 +70,18 @@ export declare function thinkingLevelMapFor(efforts: readonly string[] | undefin
 export declare function requiresResponsesApiEntry(nativeEndpoints: readonly string[]): boolean;
 /** pi-ai `model.api` value for the given native endpoints. */
 export declare function modelApiForEntry(nativeEndpoints: readonly string[]): 'openai-completions' | 'openai-responses';
+/**
+ * The one label both the DSH model picker and this plugin's settings page show.
+ * The model name is exactly `display_name`. Prefer the group after the last
+ * middle dot in `magpie_label`; if it is absent or empty, capitalize the first
+ * character of the id's first path segment as the fallback group.
+ */
+export declare function displayNameFor(raw: Record<string, unknown>): string;
 /** Decode one gateway model object into a catalog entry. */
 export declare function decodeModel(raw: unknown): MagpieModelEntry | undefined;
 /** Decode the full gateway `/v1/models` payload into entries keyed by id. */
 export declare function decodeMagpieModels(data: unknown): Map<string, MagpieModelEntry>;
-/**
- * Compile-time static snapshot (observed 2026-10-02, 22 models): last-resort
- * bootstrap while the gateway is unreachable. Refreshed by hand when the
- * gateway catalog changes shape; live data always wins when reachable.
- */
+/** The exported snapshot, with each label derived by the one display-name rule. */
 export declare const staticMagpieModels: MagpieModelEntry[];
 export interface CatalogSnapshot {
     status: 'pending' | 'ready' | 'stale' | 'error';
