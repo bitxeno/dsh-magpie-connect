@@ -44,6 +44,7 @@ export interface CatalogLike {
     };
     getEntry?(model: string): {
         nativeEndpoints: string[];
+        displayName?: string;
     } | undefined;
     reasoningFor?(model: string): {
         efforts: Array<{
