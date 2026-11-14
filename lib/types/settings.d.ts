@@ -15,11 +15,19 @@
 export interface MagpiePageSettings {
     baseUrl?: string;
     apiKey?: string;
+    /** Magpie Web Key; never returned to the browser, only its presence is. */
+    webKey?: string;
     /**
      * Allowlist of model ids the picker offers. `undefined` = inherit every model
      * the gateway serves; `[]` = offer none; otherwise exactly these ids.
      */
-    enabledModels?: string[];
+    enabledModels?: string[] | undefined;
+    /**
+     * Whether the composer's routing-trace icon shows in the input box's right
+     * tool row. Absent reads as shown (the pre-toggle behavior); `false` hides
+     * it. The settings page's switch writes `true`/`false` explicitly.
+     */
+    showComposerIcon?: boolean;
     /**
      * Set once the `hiddenModels` (blacklist) document has been converted to
      * `enabledModels`. Its presence stops the migration from running twice — a
@@ -41,8 +49,11 @@ export interface EffectiveEndpoint {
 export interface MagpieSettingsView {
     baseUrl: string;
     hasApiKey: boolean;
+    hasWebKey: boolean;
     enabledModels?: string[];
     inheritedModels: boolean;
+    /** Whether the composer's routing icon shows (absent reads as true). */
+    showComposerIcon: boolean;
 }
 export declare const SETTINGS_FILE = "settings.json";
 export declare function defaultSettingsPath(dataDir: string): string;

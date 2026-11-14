@@ -49,6 +49,11 @@ const css: Record<string, Record<string, string | number>> = {
   hint: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
   error: { margin: 0, whiteSpace: 'pre-wrap', color: 'var(--dsw-alias-label-error, var(--dsw-alias-state-danger-label))' },
   ok: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-state-success-label, var(--dsw-alias-label-primary))' },
+  switchRow: { display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' },
+  switchBox: { width: 16, height: 16, margin: '2px 0 0', accentColor: 'var(--dsw-alias-brand-primary, #4c6ef5)', cursor: 'pointer', flex: 'none' },
+  switchText: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
+  switchLabel: { fontSize: 14, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)' },
+  switchHint: { fontSize: 12, lineHeight: '17px', color: 'var(--dsw-alias-label-tertiary)' },
 }
 
 interface Envelope {
@@ -107,12 +112,28 @@ async function saveEnabledModels(enabled: string[] | undefined): Promise<void> {
   await request('/api/magpie-settings', 'POST', enabled === undefined ? {} : { enabledModels: enabled })
 }
 
+/**
+ * Persist the composer-icon toggle. Sent alone, so flipping it can never
+ * re-commit credentials the user is still editing (the same rule the model
+ * list's autosave follows).
+ */
+async function saveShowComposerIcon(show: boolean): Promise<void> {
+  await request('/api/magpie-settings', 'POST', { showComposerIcon: show })
+}
+
+/** Persist only the Web Key, so it never re-commits URL/API key fields. */
+async function saveWebKey(webKey: string): Promise<MagpieSettingsView> {
+  return (await request('/api/magpie-settings', 'POST', { webKey })) as MagpieSettingsView
+}
+
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
-  /** Whether a key is stored server-side; the value itself never reaches the page. */
+  const [webKey, setWebKey] = useState('')
+  /** Secrets remain server-side; the page only learns whether each exists. */
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [hasWebKey, setHasWebKey] = useState(false)
   /** `undefined` = inherit the gateway directory; an array = exactly those ids. */
   const [enabled, setEnabled] = useState<string[] | undefined>(undefined)
   const [models, setModels] = useState<ModelRow[]>([])
@@ -122,6 +143,12 @@ export function MagpieSettings(): unknown {
   const [modelsStatus, setModelsStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [modelsError, setModelsError] = useState<string | undefined>(undefined)
   const [loaded, setLoaded] = useState(false)
+  /** Whether the composer's routing icon shows; the switch writes through immediately. */
+  const [showComposerIcon, setShowComposerIcon] = useState(true)
+  const [iconStatus, setIconStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [iconError, setIconError] = useState<string | undefined>(undefined)
+  const [webKeyStatus, setWebKeyStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [webKeyError, setWebKeyError] = useState<string | undefined>(undefined)
   /**
    * Set the moment the user touches either credential field. The first read
    * and any in-flight warm-up then leave those fields alone, so a slow load
@@ -188,7 +215,9 @@ export function MagpieSettings(): unknown {
       // The credential never comes back; only whether one exists. The input
       // stays empty and its placeholder says the saved key will be kept.
       setHasApiKey(settings.hasApiKey === true)
+      setHasWebKey(settings.hasWebKey === true)
       setEnabled(settings.enabledModels)
+      setShowComposerIcon(settings.showComposerIcon !== false)
       setModels(listed)
       setLoaded(true)
       // The Host answers before its catalog has warmed up, and the first
@@ -243,6 +272,44 @@ export function MagpieSettings(): unknown {
     modelsQueue.push(next)
   }
 
+  /**
+   * Flip the composer icon and persist immediately (one deliberate act, like
+   * the model rows' remove). The client half re-reads this setting when its
+   * host page remounts, so the change lands without a restart.
+   */
+  const applyShowComposerIcon = (show: boolean): void => {
+    setShowComposerIcon(show)
+    setIconStatus('saving')
+    setIconError(undefined)
+    saveShowComposerIcon(show).then(
+      () => setIconStatus('saved'),
+      (cause: unknown) => {
+        setIconStatus('error')
+        setIconError(cause instanceof Error ? cause.message : String(cause))
+        // The stored value did not move; read the truth back.
+        setShowComposerIcon((previous) => !previous)
+      },
+    )
+  }
+
+  /** Save the Web Key alone; the bare save button remains for URL/API key. */
+  const applyWebKey = (): void => {
+    if (webKey.trim() === '') return
+    setWebKeyStatus('saving')
+    setWebKeyError(undefined)
+    saveWebKey(webKey.trim()).then(
+      (saved) => {
+        setHasWebKey(saved.hasWebKey === true)
+        setWebKey('')
+        setWebKeyStatus('saved')
+      },
+      (cause: unknown) => {
+        setWebKeyStatus('error')
+        setWebKeyError(cause instanceof Error ? cause.message : String(cause))
+      },
+    )
+  }
+
   const save = async (): Promise<void> => {
     setBusy('saving')
     setError(undefined)
@@ -255,7 +322,8 @@ export function MagpieSettings(): unknown {
       })) as MagpieSettingsView
       setBaseUrl(saved.baseUrl)
       setHasApiKey(saved.hasApiKey)
-      // Never keep the typed secret in component state after it is stored.
+      setHasWebKey(saved.hasWebKey)
+      // Never keep typed secrets in component state after they are stored.
       setApiKey('')
       // Adopt what the server stored, without queueing a write of its own —
       // that would be a pointless echo of what just landed. The set comes back
@@ -341,6 +409,45 @@ export function MagpieSettings(): unknown {
         )}
         {notice === undefined ? null : <p style={css.ok}>{notice}</p>}
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
+      </div>
+
+      <div style={css.card}>
+        <h3 style={css.cardTitle}>{text('enhancements')}</h3>
+        <div style={css.field}>
+          <span style={css.label}>{text('webKey')}</span>
+          <Input type="password" value={webKey} placeholder={text(hasWebKey ? 'webKeySavedPlaceholder' : 'webKeyPlaceholder')} disabled={working || webKeyStatus === 'saving'} onChange={(event: { currentTarget: { value: string } }) => setWebKey(event.currentTarget.value)} />
+          <p style={css.hint}>{text('webKeyHint')}</p>
+        </div>
+        <label style={css.switchRow}>
+          <input
+            type="checkbox"
+            style={css.switchBox}
+            checked={showComposerIcon}
+            disabled={iconStatus === 'saving' || !hasWebKey}
+            onChange={(event: { currentTarget: { checked: boolean } }) => applyShowComposerIcon(event.currentTarget.checked)}
+          />
+          <span style={css.switchText}>
+            <span style={css.switchLabel}>{text('composerIcon')}</span>
+            <span style={css.switchHint}>{hasWebKey ? text('composerIconHint') : text('composerIconNeedsWebKey')}</span>
+          </span>
+        </label>
+        <div style={css.row}>
+          <Button variant="outline" disabled={working || webKeyStatus === 'saving' || webKey.trim() === ''} onClick={() => applyWebKey()}>
+            {webKeyStatus === 'saving' ? text('saving') : text('save')}
+          </Button>
+          {webKeyStatus === 'saved' ? <span style={css.ok}>{text('webKeySaved')}</span> : null}
+        </div>
+        {iconStatus === 'saved' ? <p style={css.ok}>{text('composerIconSaved')}</p> : null}
+        {webKeyError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {text('composerIconFailed', { message: webKeyError })}
+          </p>
+        )}
+        {iconError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {text('composerIconFailed', { message: iconError })}
+          </p>
+        )}
       </div>
 
       <ModelListEditor

@@ -12,6 +12,7 @@ import { legacyDataDir } from './homeDir.ts'
 import { MagpieAdapter } from './adapter/magpie-adapter.ts'
 import type { AttachmentStore } from './adapter/messages.ts'
 import { resolveConfig, type DshMagpieConnectConfig } from './config.ts'
+import { deriveGatewayBase, fetchTraceView, fetchWebIcon, TRACE_TIMEOUT_MS } from './trace.ts'
 import {
   SettingsStore,
   defaultSettingsPath,
@@ -68,6 +69,15 @@ export const TEST_API = '/api/magpie-test'
  * user picks from — never configuration written behind them.
  */
 export const DISCOVER_API = '/api/magpie-discover'
+/**
+ * Routing-trace read for the composer button's popover (`/api/magpie-trace`).
+ * The host reads the gateway's own ledger (`/v1/magpie/usage/requests`) and
+ * quotas (`/v1/magpie/quotas`) with the stored key and serves the compressed
+ * view — the browser never sees the key nor talks to the gateway cross-origin.
+ */
+export const TRACE_API = '/api/magpie-trace'
+/** Same-origin proxy for Magpie Web provider icons; the Web Key stays on the Host. */
+export const ICON_API = '/api/magpie-icon'
 
 /**
  * How long a settings save waits for the catalog re-read it triggered.
@@ -232,8 +242,10 @@ function settingsView(backend: SettingsBackend): MagpieSettingsView {
   return {
     baseUrl: endpoint.baseUrl,
     hasApiKey: endpoint.apiKey !== '',
+    hasWebKey: (page.webKey ?? '').trim() !== '',
     enabledModels: page.enabledModels,
     inheritedModels: page.enabledModels === undefined,
+    showComposerIcon: page.showComposerIcon !== false,
   }
 }
 
@@ -246,12 +258,16 @@ function settingsView(backend: SettingsBackend): MagpieSettingsView {
 function stripBlankApiKey(backend: SettingsBackend, body: unknown): unknown {
   if (!body || typeof body !== 'object') return body
   const record = body as Record<string, unknown>
-  if (typeof record.apiKey !== 'string' || record.apiKey.trim() !== '') return body
-  if (resolveEffectiveEndpoint(backend.patchEndpoint, backend.store.get()).apiKey === '') {
-    throw new Error('dsh-magpie-connect: apiKey is required and must not be empty')
-  }
   const rest = { ...record }
-  delete rest.apiKey
+  if (typeof record.apiKey === 'string' && record.apiKey.trim() === '') {
+    if (resolveEffectiveEndpoint(backend.patchEndpoint, backend.store.get()).apiKey === '') {
+      throw new Error('dsh-magpie-connect: apiKey is required and must not be empty')
+    }
+    delete rest.apiKey
+  }
+  // An empty Web Key field means "keep the saved Web Key", just like the API
+  // Key field. It may also be omitted entirely by older clients.
+  if (typeof record.webKey === 'string' && record.webKey.trim() === '') delete rest.webKey
   return rest
 }
 
@@ -375,6 +391,51 @@ async function handleDiscoverPost(request: Request): Promise<Response> {
   }
 }
 
+/**
+ * The composer popover's routing view: the gateway's request ledger plus the
+ * accounts' allowances, compressed by {@link fetchTraceView} into the shape
+ * `trace-contract.ts` declares. `?session=<id>` (the DSH session the composer
+ * popover belongs to) adds the session's own latest route. Errors resolve
+ * into a status kind the popover renders as one localized hint row — never
+ * a throw.
+ */
+async function handleTraceGet(request: Request): Promise<Response> {
+  try {
+    const backend = backendOrThrow()
+    const session = new URL(request.url).searchParams.get('session') ?? undefined
+    const pageSettings = backend.store.get()
+    const view = await fetchTraceView(backend.effective(), AbortSignal.timeout(TRACE_TIMEOUT_MS), session ?? undefined, pageSettings.webKey)
+    return routeOk(view)
+  } catch (error) {
+    return routeFail(error)
+  }
+}
+
+/**
+ * Serve one Magpie Web provider icon through DSH's same-origin API so the
+ * browser does not need a Web Key cookie for `api.lan:3430/icons/...`.
+ */
+async function handleIconGet(request: Request): Promise<Response> {
+  const name = new URL(request.url).searchParams.get('name') ?? ''
+  if (name === '') return jsonResponse(404, { ok: false, error: 'icon name is required' })
+  try {
+    const backend = backendOrThrow()
+    const webKey = backend.store.get().webKey
+    if (webKey === undefined || webKey.trim() === '') {
+      return jsonResponse(404, { ok: false, error: 'Magpie Web Key is not configured' })
+    }
+    const base = deriveGatewayBase(normalizeBaseUrl(backend.effective().baseUrl))
+    if (base === undefined || base === '') return jsonResponse(404, { ok: false, error: 'gateway base is invalid' })
+    const icon = await fetchWebIcon(base, webKey.trim(), name, AbortSignal.timeout(TRACE_TIMEOUT_MS))
+    return new Response(icon.body, {
+      status: 200,
+      headers: { 'content-type': icon.contentType, 'cache-control': 'public, max-age=3600' },
+    })
+  } catch (error) {
+    return jsonResponse(404, { ok: false, error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
 function routeDefinitions(): RouteDefinition[] {
   return [
     {
@@ -400,6 +461,18 @@ function routeDefinitions(): RouteDefinition[] {
       methods: ['POST'],
       requestBody: 'buffered',
       fetch: (request: Request) => handleDiscoverPost(request),
+    },
+    {
+      path: TRACE_API,
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: (request: Request) => handleTraceGet(request),
+    },
+    {
+      path: ICON_API,
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: (request: Request) => handleIconGet(request),
     },
   ]
 }

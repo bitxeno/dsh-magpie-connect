@@ -173,7 +173,9 @@ test('apply registers the adapter and serves settings/models/test routes', async
   assert.deepEqual((settings.payload as { value: unknown }).value, {
     baseUrl: origin,
     hasApiKey: true,
+    hasWebKey: false,
     inheritedModels: true,
+    showComposerIcon: true,
   })
   assert.equal(JSON.stringify(settings.payload).includes('test-key'), false)
 
@@ -204,8 +206,10 @@ test('POST settings persists the allowlist, narrows the picker, and validates', 
   assert.deepEqual((saved.payload as { value: unknown }).value, {
     baseUrl: origin,
     hasApiKey: true,
+    hasWebKey: false,
     enabledModels: ['b'],
     inheritedModels: false,
+    showComposerIcon: true,
   })
 
   const models = await callRoute(ctx.routes, MODELS_API, 'GET')
@@ -216,6 +220,29 @@ test('POST settings persists the allowlist, narrows the picker, and validates', 
   assert.equal(rows.find((row) => row.id === 'a')?.enabled, false)
 
   const bad = await callRoute(ctx.routes, SETTINGS_API, 'POST', { baseUrl: 'bogus' })
+  assert.equal((bad.payload as { ok: boolean }).ok, false)
+})
+
+test('Web Key is redacted, validated, and a blank field keeps the saved one', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-apply-')) })
+  await settled()
+
+  const saved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { webKey: 'web-secret' })
+  assert.equal((saved.payload as { ok: boolean }).ok, true)
+  const value = (saved.payload as { value: { hasWebKey: boolean } }).value
+  assert.equal(value.hasWebKey, true)
+  assert.equal(JSON.stringify(saved.payload).includes('web-secret'), false)
+
+  const autosaved = await callRoute(ctx.routes, SETTINGS_API, 'POST', { enabledModels: ['a'], webKey: '' })
+  assert.equal((autosaved.payload as { ok: boolean }).ok, true)
+  const kept = (autosaved.payload as { value: { hasWebKey: boolean } }).value
+  assert.equal(kept.hasWebKey, true)
+
+  const bad = await callRoute(ctx.routes, SETTINGS_API, 'POST', { webKey: 7 })
   assert.equal((bad.payload as { ok: boolean }).ok, false)
 })
 
@@ -236,8 +263,10 @@ test('an autosave that sends only enabledModels leaves credentials untouched', a
   assert.deepEqual((autosaved.payload as { value: unknown }).value, {
     baseUrl: origin,
     hasApiKey: true,
+    hasWebKey: false,
     enabledModels: ['b'],
     inheritedModels: false,
+    showComposerIcon: true,
   })
 
   const settings = await callRoute(ctx.routes, SETTINGS_API, 'GET')

@@ -445,6 +445,14 @@ export class MagpieAdapter {
     // gateway extensions (`none`/`ultra`) ride verbatim, known levels ride
     // the ladder, and omission keeps the gateway default.
     const reasoningEffort = planReasoningEffort(options.reasoningEffort, options.model, this.#catalog)
+    // The session id rides the same header Magpie's `/v1/magpie/route`
+    // reads (`x-session-id`, one of its recognized session headers): with
+    // it the gateway tags each request's routing with the DSH session, so
+    // the composer's routing popover can show this session's latest route.
+    // Official dsh-llm adapters do the same (`x-deepseek-harness-session-id`,
+    // which Magpie also reads; the generic name keeps third-party gateways
+    // out of DSH's private namespace).
+    const sessionId = typeof options.sessionId === 'string' ? options.sessionId : undefined
     return this.#provider.stream(model, context as unknown as Context, {
       apiKey: this.#wireApiKey(),
       signal,
@@ -453,6 +461,7 @@ export class MagpieAdapter {
       temperature: options.temperature,
       maxTokens: options.maxTokens ?? requestDefaultMaxTokens(model.contextWindow, model.maxTokens),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(sessionId !== undefined ? { headers: { 'x-session-id': sessionId } } : {}),
     })
   }
 

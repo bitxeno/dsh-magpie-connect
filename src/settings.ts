@@ -20,11 +20,19 @@ import { dirname, join } from 'node:path'
 export interface MagpiePageSettings {
   baseUrl?: string
   apiKey?: string
+  /** Magpie Web Key; never returned to the browser, only its presence is. */
+  webKey?: string
   /**
    * Allowlist of model ids the picker offers. `undefined` = inherit every model
    * the gateway serves; `[]` = offer none; otherwise exactly these ids.
    */
-  enabledModels?: string[]
+  enabledModels?: string[] | undefined
+  /**
+   * Whether the composer's routing-trace icon shows in the input box's right
+   * tool row. Absent reads as shown (the pre-toggle behavior); `false` hides
+   * it. The settings page's switch writes `true`/`false` explicitly.
+   */
+  showComposerIcon?: boolean
   /**
    * Set once the `hiddenModels` (blacklist) document has been converted to
    * `enabledModels`. Its presence stops the migration from running twice — a
@@ -48,8 +56,11 @@ export interface EffectiveEndpoint {
 export interface MagpieSettingsView {
   baseUrl: string
   hasApiKey: boolean
+  hasWebKey: boolean
   enabledModels?: string[]
   inheritedModels: boolean
+  /** Whether the composer's routing icon shows (absent reads as true). */
+  showComposerIcon: boolean
 }
 
 export const SETTINGS_FILE = 'settings.json'
@@ -110,7 +121,19 @@ export function normalizePageSettings(raw: unknown): MagpiePageSettings {
     // Surrounding whitespace is always a paste artifact in Bearer keys.
     out.apiKey = record.apiKey.trim()
   }
+  if (record.webKey !== undefined) {
+    if (typeof record.webKey !== 'string' || record.webKey.trim() === '') {
+      throw new Error('dsh-magpie-connect: webKey must be a non-empty string when supplied')
+    }
+    out.webKey = record.webKey.trim()
+  }
   if (record.enabledModels !== undefined) out.enabledModels = normalizeEnabledModels(record.enabledModels)
+  if (record.showComposerIcon !== undefined) {
+    if (typeof record.showComposerIcon !== 'boolean') {
+      throw new Error('dsh-magpie-connect: showComposerIcon must be a boolean')
+    }
+    out.showComposerIcon = record.showComposerIcon
+  }
   if (record.migratedFromHiddenModels === true) out.migratedFromHiddenModels = true
   return out
 }

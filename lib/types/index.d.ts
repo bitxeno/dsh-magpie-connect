@@ -48,6 +48,15 @@ export declare const TEST_API = "/api/magpie-test";
  * user picks from — never configuration written behind them.
  */
 export declare const DISCOVER_API = "/api/magpie-discover";
+/**
+ * Routing-trace read for the composer button's popover (`/api/magpie-trace`).
+ * The host reads the gateway's own ledger (`/v1/magpie/usage/requests`) and
+ * quotas (`/v1/magpie/quotas`) with the stored key and serves the compressed
+ * view — the browser never sees the key nor talks to the gateway cross-origin.
+ */
+export declare const TRACE_API = "/api/magpie-trace";
+/** Same-origin proxy for Magpie Web provider icons; the Web Key stays on the Host. */
+export declare const ICON_API = "/api/magpie-icon";
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
     store: SettingsStore;

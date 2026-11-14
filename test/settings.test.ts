@@ -50,6 +50,22 @@ test('normalizePageSettings keeps known fields and drops unknown keys', () => {
   assert.throws(() => normalizePageSettings({ baseUrl: 'bogus' }), /valid URL/)
 })
 
+test('normalizePageSettings accepts the composer-icon toggle and refuses non-booleans', () => {
+  assert.deepEqual(normalizePageSettings({ showComposerIcon: false }), { showComposerIcon: false })
+  assert.deepEqual(normalizePageSettings({ showComposerIcon: true }), { showComposerIcon: true })
+  assert.deepEqual(normalizePageSettings({}), {})
+  // Absent stays absent: the view reads it as "shown" for older documents.
+  assert.equal('showComposerIcon' in normalizePageSettings({ apiKey: 'k' }), false)
+  assert.throws(() => normalizePageSettings({ showComposerIcon: 'yes' }), /boolean/)
+})
+
+test('normalizePageSettings accepts the Web Key and refuses non-strings', () => {
+  assert.deepEqual(normalizePageSettings({ webKey: '  web-secret  ' }), { webKey: 'web-secret' })
+  assert.equal('webKey' in normalizePageSettings({}), false)
+  assert.throws(() => normalizePageSettings({ webKey: '' }), /non-empty/)
+  assert.throws(() => normalizePageSettings({ webKey: 7 }), /non-empty string/)
+})
+
 test('resolveEffectiveEndpoint prefers the page per field', () => {
   const patch = { baseUrl: 'http://127.0.0.1:3425', apiKey: 'not-needed' }
   assert.deepEqual(resolveEffectiveEndpoint(patch, {}), patch)
