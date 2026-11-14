@@ -245,6 +245,9 @@ const accountPlanStyle = {
   border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))',
   color: 'var(--dsw-alias-label-secondary, #c9d2e0)',
   whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'clip',
+  maxWidth: '10ch',
 } as const
 
 const barsStyle = {
