@@ -387,6 +387,40 @@ test('fetchTraceView reports Web Key failure without hiding the simplified view'
   }
 })
 
+test('fetchTraceView falls back to the newest overall route without a session', async () => {
+  const saved = globalThis.fetch
+  const route = (id: number, session: string) => ({
+    id,
+    time: `2026-11-14T13:5${id}:00+08:00`,
+    session,
+    model: 'group/bot',
+    group: { id: 'bot', name: 'bot', ref: 'group/bot', routing: 'order' },
+    order: [{ id: 'workbuddy', provider: 'workbuddy', name: 'WorkBuddy', who: 'momo', model: 'hy4free', used: 20 }],
+    tries: [{ id: 'workbuddy', model: 'hy4free', status: 200, done: true, ms: 900 }],
+    done: true,
+    status: 200,
+    ms: 950,
+  })
+  globalThis.fetch = fakeFetch({
+    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
+    '/v1/magpie/quotas': { data: [] },
+    '/api/gateway/trace': { seq: 3, routes: [route(1, 'session-a'), route(2, 'session-b')] },
+  })
+  try {
+    // No session: the newest route in the whole trace stands in for it.
+    const overall = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal, undefined, 'web-secret')
+    assert.equal(overall.sessionTrace?.id, 2)
+    // A named but unrouted session also falls back to the newest overall route.
+    const unrouted = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-gone', 'web-secret')
+    assert.equal(unrouted.sessionTrace?.id, 2)
+    // A named, routed session still wins over the fallback.
+    const named = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal, 'session-a', 'web-secret')
+    assert.equal(named.sessionTrace?.id, 1)
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
 test('durationParts compresses one significant unit', () => {
   assert.deepEqual(durationParts(820), { n: 820, unit: 'ms' })
   assert.deepEqual(durationParts(1997), { n: 2, unit: 's' })

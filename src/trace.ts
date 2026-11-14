@@ -773,10 +773,14 @@ export async function fetchTraceView(endpoint: EffectiveEndpoint, signal: AbortS
   const fullRoutes = fullTraceData !== undefined && Array.isArray(fullTraceData.routes)
     ? fullTraceData.routes as LooseRecord[]
     : []
-  const matchingRoute = session !== undefined
+  // Prefer the addressed session's own latest route. With no session — or a
+  // session the gateway never routed — fall back to the newest route in the
+  // whole trace, so the popover still shows the latest overall routing.
+  const matched = session !== undefined
     ? [...fullRoutes].reverse().find((route) => str(route, 'session') === session)
     : undefined
-  const sessionTrace = matchingRoute !== undefined ? toSessionTrace(matchingRoute, accounts) : undefined
+  const matchedRoute = matched ?? (fullRoutes.length > 0 ? fullRoutes[fullRoutes.length - 1] : undefined)
+  const sessionTrace = matchedRoute !== undefined ? toSessionTrace(matchedRoute, accounts) : undefined
   const traceFailure = fullTraceOut !== undefined && 'error' in fullTraceOut ? fullTraceOut.error : undefined
   const webTraceError: TraceView['webTraceError'] = webKey === undefined || webKey.trim() === ''
     ? 'missing-key'

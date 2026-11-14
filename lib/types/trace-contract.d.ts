@@ -173,7 +173,12 @@ export interface TraceView {
      * one for it. Absent (not null) when the gateway doesn't know the session.
      */
     readonly sessionRoute?: SessionRouteView;
-    /** The full trace row for this session, including order/left/tries/Rest. */
+    /**
+     * The trace row the popover renders: the addressed session's own latest
+     * route when one is named and routed, otherwise the newest route in the
+     * whole trace (the latest overall routing). Absent only when the Web trace
+     * could not be loaded at all.
+     */
     readonly sessionTrace?: SessionTraceView;
     /** A link to the Magpie Web Routing page, derived by the Host (Web Key stays server-side). */
     readonly routingUrl?: string;

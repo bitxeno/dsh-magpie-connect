@@ -2,9 +2,10 @@
  * The routing popover for the composer: a Magpie-mark button mounted into the
  * input box's right tool row (`conversation.input.right`, the seat before the
  * send button). Hovering it (desktop) — or tapping it (mobile) — opens a
- * compressed view of the gateway's routing: the request ledger's newest rows
- * on top, the accounts' allowance windows below. The host serves the data
- * (`/api/magpie-trace`); the browser never talks to the gateway itself.
+ * compressed view of the gateway's routing: this session's latest route, or
+ * — with no session — the newest route in the whole trace. The host serves
+ * the data (`/api/magpie-trace`); the browser never talks to the gateway
+ * itself.
  *
  * Open semantics follow the plugin contract: desktop hover opens and closing
  * the button+popover region closes (a short delay so the pointer can travel);
@@ -18,9 +19,7 @@ import type {
   ActiveRequestRow,
   SessionRouteView,
   SessionTraceView,
-  TraceAccountRow,
   TraceCandidate,
-  TraceRequestRow,
   TraceRoutingSection,
   TraceView,
 } from '../trace-contract.ts'
@@ -28,14 +27,9 @@ import { text } from './i18n.ts'
 import { TraceBirdIcon, TraceDotIcon, TraceFanIcon, TraceGenericIcon, TraceHollowDotIcon, TraceLinkIcon } from './trace-icons.tsx'
 import { adoptTraceStyles } from './trace-styles.ts'
 import {
-  accountLine,
   durationParts,
   maskUser,
-  requestModelLabel,
-  requestPlaceLabel,
-  requestTone,
   resetParts,
-  USAGE_BARS,
   type RequestTone,
 } from './trace-format.ts'
 import {
@@ -216,26 +210,6 @@ const rowRightStyle = {
   textAlign: 'right',
 } as const
 
-const accountRowStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '8px',
-  padding: '6px 8px',
-  borderRadius: '8px',
-  minWidth: 0,
-} as const
-
-const accountNameStyle = {
-  flex: '0 1 auto',
-  minWidth: 0,
-  fontSize: '12px',
-  lineHeight: '17px',
-  color: 'var(--dsw-alias-label-primary, #e6ebf2)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-} as const
-
 const accountPlanStyle = {
   flex: 'none',
   fontSize: '11px',
@@ -250,25 +224,8 @@ const accountPlanStyle = {
   maxWidth: '10ch',
 } as const
 
-const barsStyle = {
-  flex: '1 1 auto',
-  display: 'inline-flex',
-  gap: '2px',
-  minWidth: '24px',
-} as const
-
 const barFill = 'var(--dsw-alias-brand-primary, #4cc9f0)' as const
 const barFillCritical = 'var(--dsw-alias-state-danger-primary, #f87171)' as const
-const barEmpty = 'var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.25))' as const
-
-const accountRightStyle = {
-  flex: 'none',
-  marginLeft: 'auto',
-  fontSize: '11px',
-  lineHeight: '15px',
-  color: 'var(--dsw-alias-label-tertiary, #8a94a6)',
-  whiteSpace: 'nowrap',
-} as const
 
 const statusStyle = {
   padding: '12px',
@@ -444,90 +401,6 @@ function formatDuration(parts: { n: number; unit: 'ms' | 's' | 'm' | 'h' | 'd' }
   if (parts === undefined) return ''
   if (kind === 'took') return text(`trace.took.${parts.unit}`, { n: parts.n })
   return text(`trace.reset.${parts.unit}`, { n: parts.n })
-}
-
-/**
- * One recent request row: dot + "agent · model" over "provider · account",
- * with the duration on the right. `key` is the shim-only list marker (this
- * project's ambient react module has no `key` prop type).
- */
-function RequestRow(props: { key?: number; row: TraceRequestRow }): unknown {
-  const { row } = props
-  const tone = requestTone(row)
-  const model = requestModelLabel(row)
-  const place = requestPlaceLabel(row)
-  const took = formatDuration(durationParts(row.ms), 'took')
-  const status = tone === 'canceled' ? text('trace.canceled') : row.status !== undefined ? String(row.status) : ''
-  return (
-    <div style={requestRowStyle}>
-      <span style={{ ...dotWrapStyle, color: TONE_COLOR[tone] }}>{TraceDotIcon()}</span>
-      <span style={rowTextStyle}>
-        <span style={rowMainStyle}>
-          {row.agent}
-          {model !== '' ? <span style={{ color: 'var(--dsw-alias-label-secondary, #c9d2e0)' }}>{` · ${model}`}</span> : null}
-        </span>
-        {place !== '' ? <span style={rowSubStyle}>{place}</span> : null}
-      </span>
-      <span style={rowRightStyle}>
-        {took !== '' ? took : null}
-        {status !== '' ? <span style={{ marginLeft: took !== '' ? 6 : 0 }}>{status}</span> : null}
-      </span>
-    </div>
-  )
-}
-
-/**
- * One account row: name + plan pill + holder, the five-segment gauge, and
- * "used% · reset" on the right. An errored account draws one dim line. The
- * holder shows masked (the head of the name, mail/phone tails dropped) —
- * the same information the routing page shows after masking, kept out of
- * the DOM in full.
- */
-/** A localized account failure reason; the complete gateway text stays in the tooltip. */
-function accountErrorLabel(error: string | undefined): string {
-  if (error === undefined || error === '') return text('trace.accountError')
-  return localizedErrorText(error) ?? text('trace.accountError')
-}
-
-function AccountRow(props: { key?: string; row: TraceAccountRow }): unknown {
-  const line = accountLine(props.row)
-  const bars = line.bars
-  const right = line.errored
-    ? ''
-    : [
-        line.usedPct !== undefined ? `${line.usedPct}%` : '',
-        formatDuration(line.reset, 'reset'),
-      ].filter((part) => part !== '').join(' · ')
-  // An account error replaces the usage number and keeps its complete reason
-  // in the row tooltip. Quota `holdsWhy` describes why usage totals could not
-  // be reckoned, not the routing Rest; actual rests are shown on request tries.
-  const stateWord = line.errored ? accountErrorLabel(props.row.error) : ''
-  const who = maskUser(line.user)
-  return (
-    <div style={accountRowStyle} title={props.row.error}>
-      <span style={accountNameStyle}>{line.provider}</span>
-      {who !== undefined ? <span style={{ ...accountNameStyle, flex: '0 0 auto', color: 'var(--dsw-alias-label-secondary, #c9d2e0)' }}>{who}</span> : null}
-      {line.plan !== undefined ? <span style={accountPlanStyle}>{line.plan}</span> : null}
-      {stateWord !== '' ? (
-        <span style={{ ...rowSubStyle, marginLeft: 'auto', textAlign: 'right', flex: '1 1 auto' }}>{stateWord}</span>
-      ) : bars !== undefined ? (
-        <span style={barsStyle} aria-hidden="true">
-          {Array.from({ length: USAGE_BARS }, (_, index) => (
-            <span
-              key={index}
-              style={{
-                flex: '1 1 auto',
-                height: '5px',
-                borderRadius: '2px',
-                background: index < (bars ?? 0) ? (line.critical ? barFillCritical : barFill) : barEmpty,
-              }}
-            />
-          ))}
-        </span>
-      ) : null}
-      {stateWord === '' ? <span style={accountRightStyle}>{right}</span> : null}
-    </div>
-  )
 }
 
 /** Owner props the session-scoped slot supplies; `sessionId` names this composer's session. */
@@ -1166,13 +1039,6 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
                         {(view?.active ?? []).map((row, index) => <ActiveRow key={`${row.agent ?? ''}:${row.model ?? ''}:${index}`} row={row} />)}
                       </>
                     ) : null}
-                    {(view?.requests?.length ?? 0) > 0 ? <div style={sectionLabelStyle}>{text('trace.requests')}</div> : null}
-                    {(view?.requests ?? []).map((row) => <RequestRow key={row.id} row={row} />)}
-                    {(view?.requests?.length ?? 0) === 0 && view?.webTraceError === undefined ? <div style={statusStyle}>{text('trace.noRequests')}</div> : null}
-                    {(view?.accounts?.length ?? 0) > 0 ? <div style={sectionLabelStyle}>{text('trace.accounts')}</div> : null}
-                    {(view?.accounts ?? []).map((row, index) => (
-                      <AccountRow key={`${row.provider}:${row.user ?? index}`} row={row} />
-                    ))}
                   </>
                 )}
               </div>
