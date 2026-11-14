@@ -241,7 +241,6 @@ export function ModelListEditor(props: ModelListEditorProps): unknown {
       <div style={css.head}>
         <div style={css.heading}>
           <h3 style={css.cardTitle}>{text('models')}</h3>
-          <p style={css.meta}>{text('enabled', { count: enabledRows.length })}</p>
         </div>
         <button
           type="button"

@@ -54,6 +54,10 @@ const css: Record<string, Record<string, string | number>> = {
   switchText: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
   switchLabel: { fontSize: 14, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)' },
   switchHint: { fontSize: 12, lineHeight: '17px', color: 'var(--dsw-alias-label-tertiary)' },
+  collapseHead: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'pointer', textAlign: 'left' },
+  collapseChevron: { flex: 'none', marginLeft: 'auto', color: 'var(--dsw-alias-label-tertiary)', transition: 'transform 0.16s', display: 'inline-flex' },
+  collapseChevronOpen: { transform: 'rotate(180deg)' },
+  collapseBody: { display: 'flex', flexDirection: 'column', gap: 14 },
 }
 
 interface Envelope {
@@ -149,6 +153,8 @@ export function MagpieSettings(): unknown {
   const [iconError, setIconError] = useState<string | undefined>(undefined)
   const [webKeyStatus, setWebKeyStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [webKeyError, setWebKeyError] = useState<string | undefined>(undefined)
+  /** The interface card is secondary; keep the settings page's core controls first. */
+  const [enhancementsOpen, setEnhancementsOpen] = useState(false)
   /**
    * Set the moment the user touches either credential field. The first read
    * and any in-flight warm-up then leave those fields alone, so a slow load
@@ -411,8 +417,22 @@ export function MagpieSettings(): unknown {
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
       </div>
 
-      <div style={css.card}>
-        <h3 style={css.cardTitle}>{text('enhancements')}</h3>
+      <div style={{ ...css.card, gap: enhancementsOpen ? 14 : 0 }}>
+        <button
+          type="button"
+          aria-expanded={enhancementsOpen}
+          onClick={() => setEnhancementsOpen((open) => !open)}
+          style={css.collapseHead}
+        >
+          <h3 style={css.cardTitle}>{text('enhancements')}</h3>
+          <span style={{ ...css.collapseChevron, ...(enhancementsOpen ? css.collapseChevronOpen : {}) }} aria-hidden="true">
+            <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </span>
+        </button>
+        {enhancementsOpen ? (
+        <div style={css.collapseBody}>
         <div style={css.field}>
           <span style={css.label}>{text('webKey')}</span>
           <Input type="password" value={webKey} placeholder={text(hasWebKey ? 'webKeySavedPlaceholder' : 'webKeyPlaceholder')} disabled={working || webKeyStatus === 'saving'} onChange={(event: { currentTarget: { value: string } }) => setWebKey(event.currentTarget.value)} />
@@ -448,6 +468,8 @@ export function MagpieSettings(): unknown {
             {text('composerIconFailed', { message: iconError })}
           </p>
         )}
+        </div>
+        ) : null}
       </div>
 
       <ModelListEditor

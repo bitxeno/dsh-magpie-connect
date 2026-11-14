@@ -853,10 +853,22 @@ function CandidateCard(props: { key?: string; candidate: TraceCandidate; active?
     }
     const card = cardRef.current
     if (card === null) return
-    const measure = (): void => setOutline({ width: card.offsetWidth, height: card.offsetHeight })
+    const measure = (): void => {
+      const rect = card.getBoundingClientRect()
+      setOutline({ width: rect.width, height: rect.height })
+    }
     measure()
+    // The popover's width is clamped by its parent after these child layout
+    // effects run, and a reopen can render from cached data before that clamp.
+    // Follow every card resize (width clamp, image/font layout, viewport move),
+    // or the cached first measurement leaves the outline too short.
+    const observer = new ResizeObserver(measure)
+    observer.observe(card)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
   }, [processing, detail])
   const border = processing
     ? 'none'
