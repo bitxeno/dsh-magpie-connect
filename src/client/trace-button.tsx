@@ -26,6 +26,7 @@ import type {
 } from '../trace-contract.ts'
 import { text } from './i18n.ts'
 import { TraceBirdIcon, TraceDotIcon, TraceFanIcon, TraceGenericIcon, TraceHollowDotIcon, TraceLinkIcon } from './trace-icons.tsx'
+import { adoptTraceStyles } from './trace-styles.ts'
 import {
   accountLine,
   durationParts,
@@ -301,16 +302,6 @@ const groupHeadStyle = {
   minWidth: 0,
 } as const
 
-const groupRailStyle = {
-  position: 'absolute',
-  left: '10px',
-  top: '34px',
-  bottom: '2px',
-  width: '1px',
-  background: 'var(--dsw-alias-border-l2, rgba(128,128,128,0.28))',
-  pointerEvents: 'none',
-} as const
-
 const groupNameStyle = {
   minWidth: 0,
   flex: '0 1 auto',
@@ -354,26 +345,6 @@ const candidateListStyle = {
   marginLeft: '18px',
   paddingTop: '7px',
   paddingLeft: '8px',
-} as const
-
-const candidateRailStyle = {
-  position: 'absolute',
-  left: '-16px',
-  top: '14px',
-  width: '16px',
-  height: '1px',
-  background: 'var(--dsw-alias-border-l2, rgba(128,128,128,0.28))',
-  pointerEvents: 'none',
-} as const
-
-const candidateRailActiveStyle = {
-  position: 'absolute',
-  left: '-16px',
-  top: '14px',
-  width: '16px',
-  height: '1px',
-  background: 'var(--dsw-alias-brand-primary, #4cc9f0)',
-  pointerEvents: 'none',
 } as const
 
 const directListStyle = {
@@ -632,6 +603,18 @@ function SessionRouteRow(props: { route: SessionRouteView }): unknown {
   )
 }
 
+interface TraceWirePath {
+  readonly d: string
+  readonly active: boolean
+  readonly live: boolean
+}
+
+interface TraceWireState {
+  readonly width: number
+  readonly height: number
+  readonly paths: readonly TraceWirePath[]
+}
+
 /** Localize a Magpie routing mode, defaulting to Smart for `""`. */
 function routingLabel(routing: string | undefined): string {
   const key = `trace.routing.${routing || 'smart'}`
@@ -667,9 +650,58 @@ function RoutingGroupCard(props: { key?: string; section: TraceRoutingSection })
   const { section } = props
   const showHeader = section.hideHeader !== true
   const activeIndex = section.candidates.findIndex((candidate) => candidate.outcome === 'answered' || candidate.outcome === 'processing')
+  const groupRef = useRef<HTMLDivElement | null>(null)
+  const [wires, setWires] = useState<TraceWireState>({ width: 0, height: 0, paths: [] })
+
+  // Measure candidate rows and draw Magpie's cubic S wires from the group
+  // header centre to each card centre. A pixel-sized viewBox means no path
+  // scaling, so rounded corners/dash phase stay aligned with the cards.
+  useLayoutEffect(() => {
+    const container = groupRef.current
+    if (container === null || !showHeader) {
+      setWires({ width: 0, height: 0, paths: [] })
+      return
+    }
+    const measure = (): void => {
+      const rect = container.getBoundingClientRect()
+      const rows = Array.from(container.querySelectorAll('[data-magpie-candidate]')) as HTMLElement[]
+      const x0 = 10
+      const x3 = 26
+      const mx = (x0 + x3) / 2
+      const y0 = 16
+      const paths = rows.map((row, index) => {
+        const card = row.getBoundingClientRect()
+        const y3 = card.top - rect.top + card.height / 2
+        return {
+          d: `M${x0} ${y0} C${mx} ${y0} ${mx} ${y3} ${x3} ${y3}`,
+          active: index === activeIndex,
+          live: section.candidates[index]?.outcome === 'processing',
+        }
+      })
+      setWires({ width: rect.width, height: rect.height, paths })
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [showHeader, activeIndex, section.candidates])
+
   return (
-    <div style={traceGroupStyle}>
-      {showHeader ? <span style={groupRailStyle} aria-hidden="true" /> : null}
+    <div ref={groupRef} style={traceGroupStyle}>
+      {showHeader && wires.width > 0 ? (
+        <svg
+          aria-hidden="true"
+          viewBox={`0 0 ${wires.width} ${wires.height}`}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}
+        >
+          {wires.paths.map((wire, index) => (
+            <path
+              key={index}
+              d={wire.d}
+              className={`dsh-magpie-connect-trace-wire${wire.active ? ' is-active' : ''}${wire.live ? ' is-live' : ''}`}
+            />
+          ))}
+        </svg>
+      ) : null}
       {showHeader ? (
         <div style={groupHeadStyle}>
           <span style={{ ...dotWrapStyle, paddingTop: 0, color: 'var(--dsw-alias-label-secondary, #c9d2e0)' }}>{TraceFanIcon()}</span>
@@ -681,8 +713,7 @@ function RoutingGroupCard(props: { key?: string; section: TraceRoutingSection })
       <div style={showHeader ? candidateListStyle : directListStyle}>
         {section.candidates.length === 0 ? <div style={statusStyle}>{text('trace.noRequests')}</div> : null}
         {section.candidates.map((candidate, index) => (
-          <div key={`${candidate.id}:${candidate.model ?? ''}:${candidate.fixed ?? ''}:${index}`} style={candidateWrapStyle}>
-            {showHeader ? <span style={index === activeIndex ? candidateRailActiveStyle : candidateRailStyle} aria-hidden="true" /> : null}
+          <div key={`${candidate.id}:${candidate.model ?? ''}:${candidate.fixed ?? ''}:${index}`} data-magpie-candidate="" style={candidateWrapStyle}>
             <CandidateCard candidate={candidate} active={index === activeIndex} />
           </div>
         ))}
@@ -811,11 +842,29 @@ function CandidateCard(props: { key?: string; candidate: TraceCandidate; active?
   const state = candidateState(candidate)
   const detail = candidateDetail(candidate)
   const critical = (candidate.usedPct ?? 0) >= 90 || candidate.outcome === 'resting' || candidate.outcome === 'failed'
-  const border = active === true || candidate.outcome === 'answered' || candidate.outcome === 'processing'
-    ? '1px solid var(--dsw-alias-brand-primary, #4cc9f0)'
-    : (candidate.outcome === 'resting' || candidate.outcome === 'failed' || candidate.outcome === 'skipped')
-      ? '1px dashed var(--dsw-alias-state-danger-primary, rgba(248,113,113,0.55))'
-      : '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))'
+  const processing = candidate.outcome === 'processing'
+  const cardRef = useRef<HTMLDivElement | null>(null)
+  const [outline, setOutline] = useState({ width: 0, height: 0 })
+
+  useLayoutEffect(() => {
+    if (!processing) {
+      setOutline({ width: 0, height: 0 })
+      return
+    }
+    const card = cardRef.current
+    if (card === null) return
+    const measure = (): void => setOutline({ width: card.offsetWidth, height: card.offsetHeight })
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [processing, detail])
+  const border = processing
+    ? 'none'
+    : active === true || candidate.outcome === 'answered'
+      ? '1px solid var(--dsw-alias-brand-primary, #4cc9f0)'
+      : (candidate.outcome === 'resting' || candidate.outcome === 'failed' || candidate.outcome === 'skipped')
+        ? '1px dashed var(--dsw-alias-state-danger-primary, rgba(248,113,113,0.55))'
+        : '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.25))'
   const dotColor = active === true ? 'var(--dsw-alias-brand-primary, #4cc9f0)' : state.color
   const filledDot = active === true || candidate.outcome === 'answered' || candidate.outcome === 'processing' || candidate.outcome === 'failed'
   const who = maskUser(candidate.who ?? candidate.name ?? candidate.provider)
@@ -827,7 +876,12 @@ function CandidateCard(props: { key?: string; candidate: TraceCandidate; active?
     ? 'var(--dsw-alias-state-danger-primary, #f87171)'
     : 'var(--dsw-alias-label-tertiary, #8a94a6)'
   return (
-    <div style={{ ...candidateCardStyle, border, ...(active === true ? { boxShadow: '0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #4cc9f0) 20%, transparent)' } : {}) }} title={candidate.error ?? candidate.rest?.error}>
+    <div ref={cardRef} style={{ ...candidateCardStyle, border, ...(active === true && !processing ? { boxShadow: '0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #4cc9f0) 20%, transparent)' } : {}) }} title={candidate.error ?? candidate.rest?.error}>
+      {processing && outline.width > 0 ? (
+        <svg className="dsh-magpie-connect-trace-busy-outline" viewBox={`0 0 ${outline.width} ${outline.height}`} aria-hidden="true">
+          <rect x={1} y={1} width={Math.max(0, outline.width - 2)} height={Math.max(0, outline.height - 2)} rx={9} ry={9} />
+        </svg>
+      ) : null}
       <div style={candidateHeadStyle}>
         <span style={{ ...dotWrapStyle, paddingTop: 0, color: dotColor }}>{filledDot ? TraceDotIcon() : TraceHollowDotIcon()}</span>
         <ProviderLogo name={logoName} />
@@ -858,6 +912,7 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
   const [view, setView] = useState<TraceView | undefined>(undefined)
   const [coarse] = useState(prefersCoarsePointer)
   const [placement, setPlacement] = useState<PopupPlacement | null>(null)
+  adoptTraceStyles()
   const boxRef = useRef<HTMLDivElement | null>(null)
   const controllerRef = useRef<AbortController | undefined>(undefined)
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
