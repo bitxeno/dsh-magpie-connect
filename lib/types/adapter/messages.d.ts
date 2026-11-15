@@ -78,6 +78,8 @@ export interface HarnessGenerateOptions {
     temperature?: number;
     reasoningEffort?: string;
     signal?: AbortSignal;
+    /** Declared auxiliary request purpose (e.g. `compaction`); absent for ordinary turns. */
+    purpose?: string;
     [key: string]: unknown;
 }
 /** pi-ai message vocabulary (subset we emit). */

@@ -94,6 +94,15 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 60_000
 const STRENGTH_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 /**
+ * The attribution header dsh-llm's own adapters send on every provider
+ * request (`attributionHeaders()`, its APP_IDENTITY rendered as
+ * `product/version (+url)`). Sent verbatim: a newer host's version string
+ * changes nothing for the gateway, which matches the `deepseek-harness`
+ * prefix alone.
+ */
+const DSH_USER_AGENT = 'deepseek-harness/0.2.2-rc.1 (+https://github.com/deepseek-ai/deepseek-harness)'
+
+/**
  * Plan the wire `reasoning_effort` for one request. Returns the effort to
  * send via `provider.stream`, or undefined to omit the field (gateway
  * default applies).
@@ -445,13 +454,13 @@ export class MagpieAdapter {
     // gateway extensions (`none`/`ultra`) ride verbatim, known levels ride
     // the ladder, and omission keeps the gateway default.
     const reasoningEffort = planReasoningEffort(options.reasoningEffort, options.model, this.#catalog)
-    // The session id rides the same header Magpie's `/v1/magpie/route`
-    // reads (`x-session-id`, one of its recognized session headers): with
-    // it the gateway tags each request's routing with the DSH session, so
-    // the composer's routing popover can show this session's latest route.
-    // Official dsh-llm adapters do the same (`x-deepseek-harness-session-id`,
-    // which Magpie also reads; the generic name keeps third-party gateways
-    // out of DSH's private namespace).
+    // Attribution rides dsh-llm's own shape (`user-agent`:
+    // `deepseek-harness/<version> (+url)`, the value `attributionHeaders()`
+    // sends on the official adapters). Magpie names a client by its
+    // User-Agent alone — the gateway key it accepts is anonymous — so
+    // without this the plugin's turns read as the OpenAI SDK's
+    // ("OpenAI/JS 6.26.0"), and the gateway's DSH-specific views
+    // (the `agent == "dsh"` ones) never see them as DSH's.
     const sessionId = typeof options.sessionId === 'string' ? options.sessionId : undefined
     return this.#provider.stream(model, context as unknown as Context, {
       apiKey: this.#wireApiKey(),
@@ -461,7 +470,21 @@ export class MagpieAdapter {
       temperature: options.temperature,
       maxTokens: options.maxTokens ?? requestDefaultMaxTokens(model.contextWindow, model.maxTokens),
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(sessionId !== undefined ? { headers: { 'x-session-id': sessionId } } : {}),
+      headers: {
+        'user-agent': DSH_USER_AGENT,
+        // The session id rides the same header Magpie's `/v1/magpie/route`
+        // reads (`x-session-id`, one of its recognized session headers): with
+        // it the gateway tags each request's routing with the DSH session, so
+        // the composer's routing popover can show this session's latest route.
+        // Official dsh-llm adapters do the same (`x-deepseek-harness-session-id`,
+        // which Magpie also reads; the generic name keeps third-party gateways
+        // out of DSH's private namespace).
+        ...(sessionId !== undefined ? { 'x-session-id': sessionId } : {}),
+        // DSH marks compaction requests with a header, not its prompt
+        // (`dshCompacts` in magpie): "only the mark says so". The official
+        // adapters send it when `purpose` is compaction.
+        ...(options.purpose === 'compaction' ? { 'x-deepseek-harness-compact': '1' } : {}),
+      },
     })
   }
 

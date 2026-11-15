@@ -191,6 +191,7 @@ interface SeenCall {
   maxRetries: unknown
   timeoutMs: unknown
   signalAborted: unknown
+  headers: unknown
 }
 
 /** Canned upstream; records what each turn was asked. Supports stream + streamSimple. */
@@ -205,6 +206,7 @@ function cannedProvider(legs: PiEvent[][], seen: SeenCall[] = []) {
       maxRetries: options.maxRetries,
       timeoutMs: options.timeoutMs,
       signalAborted: options.signal instanceof AbortSignal ? options.signal.aborted : 'missing',
+      headers: options.headers,
     })
   }
   const next = () => {
@@ -339,6 +341,40 @@ test('connection setup uses explicit retries/timeout instead of bare SDK default
   assert.equal(seen[0]?.maxRetries, 2)
   assert.equal(seen[0]?.timeoutMs, 300_000)
   assert.equal(seen[0]?.signalAborted, false)
+})
+
+test('every turn attributes itself as dsh-llm does (deepseek-harness user-agent)', async () => {
+  const seen: SeenCall[] = []
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  await collectChunks(adapter, streamOptions())
+  const headers = seen[0]?.headers as Record<string, string> | undefined
+  assert.match(headers?.['user-agent'] ?? '', /^deepseek-harness\//)
+  assert.match(headers?.['user-agent'] ?? '', /\(\+https:\/\/github\.com\/deepseek-ai\/deepseek-harness\)$/)
+})
+
+test('the session id rides x-session-id when the harness names one', async () => {
+  const seen: SeenCall[] = []
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  await collectChunks(adapter, streamOptions({ sessionId: 'session-abc' }))
+  const headers = seen[0]?.headers as Record<string, string> | undefined
+  assert.equal(headers?.['x-session-id'], 'session-abc')
+})
+
+test('an unnamed session sends no session header', async () => {
+  const seen: SeenCall[] = []
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop')], seen) })
+  await collectChunks(adapter, streamOptions())
+  const headers = seen[0]?.headers as Record<string, string> | undefined
+  assert.equal(headers?.['x-session-id'], undefined)
+})
+
+test('a compaction turn carries the dsh compaction mark; ordinary turns do not', async () => {
+  const seen: SeenCall[] = []
+  const adapter = testAdapter(textCatalog, { providerOverride: cannedProvider([textLeg('hi', 'stop'), textLeg('hi', 'stop')], seen) })
+  await collectChunks(adapter, streamOptions({ purpose: 'compaction' }))
+  await collectChunks(adapter, streamOptions())
+  assert.equal((seen[0]?.headers as Record<string, string>)?.['x-deepseek-harness-compact'], '1')
+  assert.equal((seen[1]?.headers as Record<string, string>)?.['x-deepseek-harness-compact'], undefined)
 })
 
 test('a harness abort reaches the upstream as an aborted signal', async () => {
