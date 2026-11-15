@@ -16,6 +16,39 @@ export function TraceBirdIcon(): unknown {
   )
 }
 
+/**
+ * The Magpie bird in three clipped parts (body / tail / wing), as magpie's
+ * own `.sk-bird` draws it while a view loads: the wing flaps (`sk-flap`),
+ * the body and tail stand still. Same source art as {@link TraceBirdIcon};
+ * the clip paths are magpie's own (44×44 viewBox).
+ */
+export function TraceBirdLoadingIcon(): unknown {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" width={22} height={22} viewBox="0 0 44 44" fill="currentColor" aria-hidden="true" focusable="false" data-magpie-trace-bird>
+      <g clipPath="url(#dsh-magpie-connect-bird-body)">
+        <path fillRule="evenodd" d={BIRD_PATH} />
+      </g>
+      <g className="dsh-magpie-connect-bird-tail" clipPath="url(#dsh-magpie-connect-bird-tail)">
+        <path fillRule="evenodd" d={BIRD_PATH} />
+      </g>
+      <g className="dsh-magpie-connect-bird-wing" clipPath="url(#dsh-magpie-connect-bird-wing)">
+        <path fillRule="evenodd" d={BIRD_PATH} />
+      </g>
+      <defs>
+        <clipPath id="dsh-magpie-connect-bird-body">
+          <path clipRule="evenodd" d="M16 0H44V44H0V26.4H10.6L13 24.2L16 19Z M29.8 18.3L26 19L22 21L17 23.5L14.6 24.7L10.6 26.4L6 29V32L9 31.5L12.5 32L16.4 31.8L19 31.4L24 28.8L28.5 24L30.6 21.4Z" />
+        </clipPath>
+        <clipPath id="dsh-magpie-connect-bird-tail">
+          <path d="M0 0H17L17.2 19.6L14 25L10.6 26.4H0Z" />
+        </clipPath>
+        <clipPath id="dsh-magpie-connect-bird-wing">
+          <path d="M29.8 18.3L26 19L22 21L17 23.5L14.6 24.7L10.6 26.4L6 29V32L9 31.5L12.5 32L16.4 31.8L19 31.4L24 28.8L28.5 24L30.6 21.4Z" />
+        </clipPath>
+      </defs>
+    </svg>
+  )
+}
+
 /** A status dot: a filled circle the row colors through `currentColor`. */
 export function TraceDotIcon(): unknown {
   return (

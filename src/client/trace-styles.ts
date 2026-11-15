@@ -60,13 +60,30 @@ const cssText = `
   .dsh-magpie-connect-trace-busy-outline rect,
   .dsh-magpie-connect-trace-wire.is-live { animation: none; }
 }
+
+/* The loading bird: magpie's own skeleton-bird wing flap while the routing
+   view fetches its first answer. Wing origin matches magpie's
+   (transform-origin 30px 19.8px in the 44x44 art); the body and tail
+   stand still. */
+@keyframes dsh-magpie-connect-bird-flap {
+  from { transform: rotate(-22deg); }
+  to { transform: rotate(18deg); }
+}
+[data-magpie-trace-bird] .dsh-magpie-connect-bird-wing {
+  transform-box: view-box;
+  transform-origin: 30px 19.8px;
+  animation: dsh-magpie-connect-bird-flap 0.16s ease-in-out infinite alternate;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-magpie-trace-bird] .dsh-magpie-connect-bird-wing { animation: none; }
+}
 `
 
 /** Inject the stylesheet once (stable id; HMR-safe). */
 export function adoptTraceStyles(): void {
   if (typeof document === 'undefined') return
   if (document.getElementById(TRACE_STYLE_ID) !== null) return
-  const style = document.createElement('style')
+  const style = document.createElement('style') as HTMLStyleElement
   style.id = TRACE_STYLE_ID
   style.textContent = cssText
   document.head.appendChild(style)

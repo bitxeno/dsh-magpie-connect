@@ -6,6 +6,13 @@
  */
 /** The Magpie bird, as the composer button draws it. */
 export declare function TraceBirdIcon(): unknown;
+/**
+ * The Magpie bird in three clipped parts (body / tail / wing), as magpie's
+ * own `.sk-bird` draws it while a view loads: the wing flaps (`sk-flap`),
+ * the body and tail stand still. Same source art as {@link TraceBirdIcon};
+ * the clip paths are magpie's own (44×44 viewBox).
+ */
+export declare function TraceBirdLoadingIcon(): unknown;
 /** A status dot: a filled circle the row colors through `currentColor`. */
 export declare function TraceDotIcon(): unknown;
 /** Magpie's hollow dot for a candidate that is ready but not in use. */

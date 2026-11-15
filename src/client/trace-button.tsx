@@ -24,7 +24,7 @@ import type {
   TraceView,
 } from '../trace-contract.ts'
 import { text } from './i18n.ts'
-import { TraceBirdIcon, TraceDotIcon, TraceFanIcon, TraceGenericIcon, TraceHollowDotIcon, TraceLinkIcon } from './trace-icons.tsx'
+import { TraceBirdIcon, TraceBirdLoadingIcon, TraceDotIcon, TraceFanIcon, TraceGenericIcon, TraceHollowDotIcon, TraceLinkIcon } from './trace-icons.tsx'
 import { adoptTraceStyles } from './trace-styles.ts'
 import {
   durationParts,
@@ -58,7 +58,6 @@ const buttonStyle = {
   justifyContent: 'center',
   width: '28px',
   height: '28px',
-  margin: '0 2px',
   padding: '0',
   border: 'none',
   borderRadius: '8px',
@@ -233,6 +232,27 @@ const statusStyle = {
   lineHeight: '18px',
   color: 'var(--dsw-alias-label-tertiary, #8a94a6)',
   flex: 'none',
+} as const
+
+/** First-load row: magpie's wing-flapping bird above its caption, both centered. */
+const loadingRowStyle = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: '8px',
+  padding: '18px 12px',
+  fontSize: '12px',
+  lineHeight: '18px',
+  color: 'var(--dsw-alias-label-tertiary, #8a94a6)',
+  flex: 'none',
+  textAlign: 'center',
+} as const
+
+const loadingBirdStyle = {
+  display: 'inline-flex',
+  flex: 'none',
+  color: 'var(--dsw-alias-label-secondary, #c9d2e0)',
 } as const
 
 const fullTraceSectionsStyle = {
@@ -1025,6 +1045,13 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
               >
                 {text('trace.retry')}
               </button>
+            </div>
+          ) : view === undefined ? (
+            // First load: nothing to show yet, so magpie's wing-flapping
+            // loading bird stands in until the first answer lands.
+            <div style={loadingRowStyle}>
+              <span style={loadingBirdStyle} aria-hidden="true">{TraceBirdLoadingIcon()}</span>
+              {text('trace.loading')}
             </div>
           ) : (
             <>
