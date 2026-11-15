@@ -797,6 +797,8 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
   const [view, setView] = useState<TraceView | undefined>(undefined)
   const [coarse] = useState(prefersCoarsePointer)
   const [placement, setPlacement] = useState<PopupPlacement | null>(null)
+  /** Hover feedback on the button itself (same look as dsh-git-plus's toolbtn). */
+  const [hover, setHover] = useState(false)
   adoptTraceStyles()
   const boxRef = useRef<HTMLDivElement | null>(null)
   const controllerRef = useRef<AbortController | undefined>(undefined)
@@ -946,8 +948,14 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
     <div
       ref={boxRef}
       style={{ position: 'relative', display: 'inline-flex', flex: 'none' }}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
+      onMouseEnter={() => {
+        setHover(true)
+        onEnter()
+      }}
+      onMouseLeave={() => {
+        setHover(false)
+        onLeave()
+      }}
     >
       <button
         type="button"
@@ -957,6 +965,14 @@ export function MagpieTraceButton(props: MagpieTraceButtonProps = {}): unknown {
         aria-expanded={open}
         style={{
           ...buttonStyle,
+          // Same hover treatment as dsh-git-plus's composer toolbtn: the
+          // shell's interactive hover background and the primary label color.
+          ...(hover && !coarse
+            ? {
+                background: 'var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.2))',
+                color: 'var(--dsw-alias-label-primary, #e8edf5)',
+              }
+            : {}),
           ...(open ? { color: 'var(--dsw-alias-label-primary-bluish, #4cc9f0)' } : {}),
         }}
       >
