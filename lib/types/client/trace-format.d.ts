@@ -58,6 +58,15 @@ export declare function requestTone(row: TraceRequestRow): RequestTone;
 export declare function requestModelLabel(row: TraceRequestRow): string;
 /** Where a request was served, as one "provider · account" string ('' when unknown). */
 export declare function requestPlaceLabel(row: TraceRequestRow): string;
+/**
+ * Whether a quota window is the account's aggregate. Vendors that meter a
+ * base allowance plus an extra one publish "Credits", "Extra credits" and
+ * "Total credits" side by side; the aggregate is the one that covers what
+ * routing actually weighs.
+ * @param windowName - the window's own name, or undefined when it has none.
+ * @returns true for "Total credits", "Grand total", … .
+ */
+export declare function isTotalWindowName(windowName: string | undefined): boolean;
 /** The header line's compressed counts, locale-ready. */
 export interface TotalsParts {
     readonly requests: number;

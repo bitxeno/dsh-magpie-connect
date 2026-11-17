@@ -15,6 +15,7 @@ import {
   requestTone,
   resetParts,
   usageBars,
+  isTotalWindowName,
   USAGE_BARS,
 } from '../src/client/trace-format.ts'
 import type { TraceAccountRow, TraceRequestRow } from '../src/trace-contract.ts'
@@ -479,4 +480,121 @@ test('accountLine flags the errored accounts instead of drawing numbers', () => 
   const bad = accountLine(errored, now)
   assert.equal(bad.errored, true)
   assert.equal(bad.bars, undefined)
+})
+
+test('fetchTraceView picks the aggregate window when the vendor splits credits', async () => {
+  const saved = globalThis.fetch
+  globalThis.fetch = fakeFetch({
+    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
+    '/v1/magpie/quotas': {
+      data: [{
+        provider: 'workbuddy',
+        name: 'WorkBuddy',
+        plan: 'Free plan',
+        user: 'momo',
+        windows: [
+          { name: 'Credits', used: 100, remaining: 0, resetsAt: '2026-11-30T15:59:59Z', display: '500 / 500', amount: 500, limit: 500, unit: 'credits' },
+          { name: 'Extra credits', used: 58.77, remaining: 41.23, display: '2110.61 / 3591', amount: 2110.61, limit: 3591, unit: 'credits' },
+          { name: 'Total credits', used: 63.81, remaining: 36.19, resetsAt: '2026-11-30T15:59:59Z', display: '2610.61 / 4091', amount: 2610.61, limit: 4091, unit: 'credits' },
+        ],
+      }],
+    },
+  })
+  try {
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal)
+    const account = view.accounts?.[0]
+    // The base allowance alone would read 100% beside a 2610 / 4091 total.
+    assert.equal(account?.windowName, 'Total credits')
+    assert.equal(account?.usedPct, 64)
+    assert.equal(account?.amount, 2610.61)
+    assert.equal(account?.limit, 4091)
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('fetchTraceView never lets an unlimited window win the account row', async () => {
+  const saved = globalThis.fetch
+  globalThis.fetch = fakeFetch({
+    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
+    '/v1/magpie/quotas': {
+      data: [{
+        provider: 'copilot',
+        name: 'Copilot',
+        plan: 'Pro',
+        user: 'someone',
+        windows: [
+          { unlimited: true, name: 'Chat requests', used: 0, remaining: 100, display: 'Unlimited' },
+          { name: 'Premium requests', used: 56.19, remaining: 43.81, resetsAt: '2026-12-01T00:00:00Z', display: '842.9 / 1500' },
+        ],
+      }],
+    },
+  })
+  try {
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal)
+    assert.equal(view.accounts?.[0]?.windowName, 'Premium requests')
+    assert.equal(view.accounts?.[0]?.usedPct, 56)
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('a candidate gauge and its amount describe the same window', async () => {
+  const saved = globalThis.fetch
+  globalThis.fetch = fakeFetch({
+    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
+    // The quota read says 100% of the base allowance; the trace row weighs the
+    // aggregate. The row's own numbers must win so the bar matches 2610/4091.
+    '/v1/magpie/quotas': {
+      data: [{
+        provider: 'workbuddy',
+        name: 'WorkBuddy',
+        user: 'momo',
+        windows: [
+          { name: 'Credits', used: 100, remaining: 0, display: '500 / 500', amount: 500, limit: 500, unit: 'credits' },
+          { name: 'Total credits', used: 63.81, remaining: 36.19, display: '2610.61 / 4091', amount: 2610.61, limit: 4091, unit: 'credits' },
+        ],
+      }],
+    },
+    '/api/gateway/trace': {
+      seq: 5,
+      routes: [{
+        id: 9,
+        time: '2026-11-17T10:56:00+08:00',
+        session: 'dsh-1',
+        model: 'group/bot',
+        order: [{
+          id: 'workbuddy', provider: 'workbuddy', name: 'WorkBuddy', who: 'momo',
+          model: 'deepseek-v4.1-flash', used: 63.34, amount: 2591.44, limit: 4091, unit: 'credits',
+        }],
+        tries: [{ id: 'workbuddy', model: 'deepseek-v4.1-flash', status: 200, done: true, ms: 900 }],
+        done: true,
+        status: 200,
+        ms: 950,
+      }],
+    },
+  })
+  try {
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-1', 'web-secret')
+    const candidate = view.sessionTrace?.sections?.[0]?.candidates?.[0]
+    // 63% is what 2591 / 4091 rounds to; the quota's 100% would contradict it.
+    assert.equal(candidate?.usedPct, 63)
+    assert.equal(candidate?.amount, 2591.44)
+    assert.equal(candidate?.limit, 4091)
+    // The limit identifies the window, so the aggregate's name travels with it.
+    assert.equal(candidate?.windowName, 'Total credits')
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('isTotalWindowName spots the aggregate window only', () => {
+  assert.equal(isTotalWindowName('Total credits'), true)
+  assert.equal(isTotalWindowName('Grand total'), true)
+  assert.equal(isTotalWindowName('  TOTAL credits '), true)
+  // The parts of the aggregate are not the aggregate.
+  assert.equal(isTotalWindowName('Credits'), false)
+  assert.equal(isTotalWindowName('Extra credits'), false)
+  assert.equal(isTotalWindowName('30 days'), false)
+  assert.equal(isTotalWindowName(undefined), false)
 })

@@ -297,14 +297,37 @@ function maskHolder(user: string | undefined): string | undefined {
 }
 
 /**
- * The quota window the popover shows for one account: the first window with
- * a usable share (a `used` percent, or an amount/limit pair), falling back
- * to the first one that names its reset date.
+ * Whether one window is the account's aggregate. Vendors that meter a base
+ * allowance plus an extra one publish three windows — "Credits", "Extra
+ * credits" and "Total credits" — and only the total covers what routing
+ * actually weighs; showing the base one alone makes the gauge disagree with
+ * the numbers beside it.
+ */
+function isTotalWindow(entry: LooseRecord): boolean {
+  return /^(grand\s+)?total\b/i.test((str(entry, 'name') ?? '').trim())
+}
+
+/** Whether one window carries a share the popover can draw. */
+function hasShare(entry: LooseRecord): boolean {
+  return num(entry, 'used') !== undefined || pctOfParts(entry) !== undefined
+}
+
+/**
+ * The quota window the popover shows for one account: the aggregate window
+ * when the vendor publishes one, else the first window with a usable share
+ * (a `used` percent, or an amount/limit pair), falling back to the first one
+ * that names its reset date. Windows the vendor marks unlimited never win —
+ * their 0% would read as "nothing used" beside an allowance that is not
+ * counted at all.
  */
 function pickWindow(windows: LooseRecord[]): LooseRecord | undefined {
+  const usable = windows.filter((entry) => entry.unlimited !== true && hasShare(entry))
+  const counted = windows.filter((entry) => entry.unlimited !== true)
   return (
-    windows.find((entry) => num(entry, 'used') !== undefined || pctOfParts(entry) !== undefined) ??
-    windows.find((entry) => str(entry, 'resetsAt') !== undefined) ??
+    usable.find(isTotalWindow) ??
+    usable[0] ??
+    counted.find((entry) => str(entry, 'resetsAt') !== undefined) ??
+    counted[0] ??
     windows[0]
   )
 }
@@ -394,6 +417,16 @@ function toTraceCandidate(
     : []
   const amount = num(entry, 'amount')
   const limit = num(entry, 'limit')
+  /**
+   * The share the gauge draws. It must describe the same window as the
+   * amount/limit beside it: when the row carries an amount/limit pair, that
+   * pair is the source, and a `used` percent that disagrees with it belongs
+   * to another window. Otherwise the vendor's own `used` stands.
+   */
+  const partsPct = pctOfParts(entry)
+  const usedPct = amount !== undefined && limit !== undefined && limit > 0
+    ? (partsPct ?? pctOf(used))
+    : pctOf(used)
   const restRaw = restOverride ?? (entry.rest && typeof entry.rest === 'object' ? entry.rest as TraceRest : undefined)
   const status = num(entry, 'status')
   const ms = num(entry, 'ms')
@@ -409,10 +442,11 @@ function toTraceCandidate(
     ...(str(entry, 'model') !== undefined ? { model: str(entry, 'model') } : {}),
     ...(str(entry, 'fixed') !== undefined ? { fixed: str(entry, 'fixed') } : {}),
     ...(via.length > 0 ? { via } : {}),
-    ...(used !== undefined ? { usedPct: pctOf(used) } : {}),
+    ...(usedPct !== undefined ? { usedPct } : {}),
     ...(amount !== undefined ? { amount } : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(str(entry, 'unit') !== undefined ? { unit: str(entry, 'unit') } : {}),
+    ...(str(entry, 'windowName') !== undefined ? { windowName: str(entry, 'windowName') } : {}),
     ...(renews.length > 0 ? { renews } : {}),
     ...(restRaw !== undefined ? { rest: restRaw } : {}),
     outcome,
@@ -507,12 +541,32 @@ function toSessionTrace(route: LooseRecord, accounts: readonly TraceAccountRow[]
       account.providerId === str(entry, 'provider') &&
       ((account.user ?? '').toLowerCase() === maskHolder(str(entry, 'who'))?.toLowerCase() || account.user === undefined),
     )
+    /**
+     * The window the row's numbers belong to, when that is knowable. The
+     * quota window names itself; the trace row does not. It shares the name
+     * while it counts that same window — the limit is the window's size, so
+     * an equal limit means the same allowance even though the two reads
+     * happened minutes apart — or while the row carries no numbers of its own
+     * and the quota filled them. A row counting another window must not wear
+     * the aggregate's label.
+     */
+    const entryAmount = num(entry, 'amount')
+    const entryLimit = num(entry, 'limit')
+    const namesPickedWindow = quota?.windowName !== undefined && (
+      (entryAmount === undefined && entryLimit === undefined) ||
+      (entryLimit !== undefined && quota.limit !== undefined && Math.abs(entryLimit - quota.limit) < 0.01)
+    )
     const quotaEnrichment: LooseRecord = {
-      ...(quota?.usedPct !== undefined && num(entry, 'used') === undefined ? { used: quota.usedPct } : {}),
-      ...(quota?.resetsAt !== undefined && !Array.isArray(entry.renews) ? { renews: [quota.resetsAt] } : {}),
-      ...(quota?.amount !== undefined ? { amount: quota.amount } : {}),
-      ...(quota?.limit !== undefined ? { limit: quota.limit } : {}),
-      ...(quota?.unit !== undefined ? { unit: quota.unit } : {}),
+      // The trace row's own counters are what routing weighed, so they win;
+      // the quota windows only fill what the row left out. Filling `used` from
+      // one window while `amount`/`limit` came from another is exactly the
+      // mismatch this guard prevents.
+      ...(num(entry, 'used') === undefined && quota?.usedPct !== undefined ? { used: quota.usedPct } : {}),
+      ...(entryAmount === undefined && quota?.amount !== undefined ? { amount: quota.amount } : {}),
+      ...(entryLimit === undefined && quota?.limit !== undefined ? { limit: quota.limit } : {}),
+      ...(str(entry, 'unit') === undefined && quota?.unit !== undefined ? { unit: quota.unit } : {}),
+      ...(str(entry, 'windowName') === undefined && namesPickedWindow ? { windowName: quota!.windowName } : {}),
+      ...(!Array.isArray(entry.renews) && quota?.resetsAt !== undefined ? { renews: [quota.resetsAt] } : {}),
     }
     const row = toTraceCandidate({ ...entry, ...quotaEnrichment }, kind, tried?.rest as TraceRest | undefined)
     if (row === undefined) return undefined

@@ -30,6 +30,7 @@ import {
   durationParts,
   maskUser,
   resetParts,
+  isTotalWindowName,
   type RequestTone,
 } from './trace-format.ts'
 import {
@@ -684,9 +685,14 @@ function candidateDetail(candidate: TraceCandidate): string {
   }
   const amount = candidate.amount !== undefined && Number.isFinite(candidate.amount) ? Math.round(candidate.amount * 100) / 100 : undefined
   const limit = candidate.limit !== undefined && Number.isFinite(candidate.limit) ? Math.round(candidate.limit * 100) / 100 : undefined
-  const unit = candidate.unit !== undefined && candidate.unit !== ''
-    ? (text(`trace.unit.${candidate.unit}`) !== `trace.unit.${candidate.unit}` ? text(`trace.unit.${candidate.unit}`) : candidate.unit)
-    : ''
+  const windowName = candidate.windowName
+  const unitKey = candidate.unit !== undefined && candidate.unit !== '' ? `trace.unit.${candidate.unit}` : ''
+  // An aggregate window's unit reads "total credits" (总积分) rather than
+  // plain "credits": the account meters a base allowance plus an extra one,
+  // and 2630.75 / 4091 is the sum of both, not the base window alone.
+  const unit = isTotalWindowName(windowName) && unitKey !== '' && text(`${unitKey}.total`) !== `${unitKey}.total`
+    ? text(`${unitKey}.total`)
+    : unitKey !== '' && text(unitKey) !== unitKey ? text(unitKey) : (candidate.unit ?? '')
   const amountText = amount !== undefined && limit !== undefined
     ? text('trace.candidate.amount', { amount, limit, unit }).trim()
     : (candidate.usedPct !== undefined ? text('trace.candidate.used', { n: candidate.usedPct }) : '')

@@ -109,6 +109,8 @@ export interface TraceCandidate {
     readonly amount?: number;
     readonly limit?: number;
     readonly unit?: string;
+    /** The allowance window the numbers are of ("Total credits", "Extra credits"). */
+    readonly windowName?: string;
     readonly renews?: readonly string[];
     readonly rest?: TraceRest;
     readonly outcome: 'processing' | 'answered' | 'failed' | 'resting' | 'skipped' | 'available';
