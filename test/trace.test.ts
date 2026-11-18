@@ -16,7 +16,7 @@ import {
   requestTone,
   resetParts,
   usageBars,
-  isTotalWindowName,
+  usageText,
   USAGE_BARS,
 } from '../src/client/trace-format.ts'
 import type { TraceAccountRow, TraceRequestRow } from '../src/trace-contract.ts'
@@ -434,16 +434,36 @@ test('durationParts compresses one significant unit', () => {
   assert.equal(durationParts(-1), undefined)
 })
 
-test('resetParts rounds up and drops past resets', () => {
+test('resetParts counts down the way Magpie does, and drops past resets', () => {
   const now = Date.parse('2026-11-13T00:00:00Z')
   // Sub-minute waits read as one minute: the popover refreshes more slowly.
   assert.deepEqual(resetParts('2026-11-13T00:00:30Z', now), { n: 1, unit: 'm' })
-  // 13 h 05 m rounds up to the hour: 14.
-  assert.deepEqual(resetParts('2026-11-13T13:05:00Z', now), { n: 14, unit: 'h' })
+  // 13 h 05 m reads 13 — Magpie's page rounds, it does not round up.
+  assert.deepEqual(resetParts('2026-11-13T13:05:00Z', now), { n: 13, unit: 'h' })
   assert.deepEqual(resetParts('2026-11-14T12:00:00Z', now), { n: 36, unit: 'h' })
   assert.deepEqual(resetParts('2026-11-30T00:00:00Z', now), { n: 17, unit: 'd' })
+  // 12 d 8 h away: Magpie says 12 天, so rounding up to 13 here disagreed
+  // with the page beside it for eight hours a day.
+  assert.deepEqual(resetParts('2026-11-25T08:00:00Z', now), { n: 12, unit: 'd' })
   assert.equal(resetParts('2026-11-12T00:00:00Z', now), undefined)
   assert.equal(resetParts(undefined, now), undefined)
+})
+
+test('usageText keeps the percent beside a counted window', () => {
+  // A credits window: the figures and the share, the same pair Magpie's page
+  // shows. Without the percent this was the one row with no share at all.
+  assert.deepEqual(
+    usageText({ amount: 3272.41999735, limit: 4291, unit: '积分', usedPct: 76 }),
+    { template: 'trace.candidate.amountPct', params: { amount: 3272.42, limit: 4291, unit: '积分', n: 76 } },
+  )
+  // No share reported: the figures alone, as before.
+  assert.deepEqual(
+    usageText({ amount: 10, limit: 20, unit: 'tokens' }),
+    { template: 'trace.candidate.amount', params: { amount: 10, limit: 20, unit: 'tokens' } },
+  )
+  // Only a share reported: just the percent.
+  assert.deepEqual(usageText({ usedPct: 42 }), { template: 'trace.candidate.used', params: { n: 42 } })
+  assert.equal(usageText({}), undefined)
 })
 
 test('usageBars maps the share onto the gauge', () => {
@@ -587,17 +607,6 @@ test('a candidate gauge and its amount describe the same window', async () => {
   } finally {
     globalThis.fetch = saved
   }
-})
-
-test('isTotalWindowName spots the aggregate window only', () => {
-  assert.equal(isTotalWindowName('Total credits'), true)
-  assert.equal(isTotalWindowName('Grand total'), true)
-  assert.equal(isTotalWindowName('  TOTAL credits '), true)
-  // The parts of the aggregate are not the aggregate.
-  assert.equal(isTotalWindowName('Credits'), false)
-  assert.equal(isTotalWindowName('Extra credits'), false)
-  assert.equal(isTotalWindowName('30 days'), false)
-  assert.equal(isTotalWindowName(undefined), false)
 })
 
 /** A gateway-view reply with no data, for the endpoints that run alongside the web trace. */

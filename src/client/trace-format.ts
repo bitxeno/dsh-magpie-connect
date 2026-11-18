@@ -38,10 +38,14 @@ export function durationParts(ms: number | undefined): DurationParts | undefined
 export type ResetParts = DurationParts
 
 /**
- * Compress the wait until a quota window resets. Rounded *up* — "还有 13
- * 小时" must not drop to 0 while the hour is still running, and a day that
- * ends tomorrow stays "1 天". Sub-minute waits read as one minute: the
- * popover refreshes more slowly than that, so finer wording would lie.
+ * Compress the wait until a quota window resets, word for word the way
+ * Magpie's own page does it (`untilText` in its app.js): round to the
+ * nearest unit, minutes below an hour, hours below two days, days past
+ * that. The popover sits beside that page, so both must say the same
+ * number — rounding each step up here instead made a reset 12 days and 8
+ * hours away read "13 天" against Magpie's "12 天". Sub-minute waits read
+ * as one minute rather than zero, since the popover refreshes more slowly
+ * than that.
  * @param resetsAt - the reset instant (RFC 3339) or undefined.
  * @param now - the reference instant (epoch ms); defaults to the caller's clock.
  * @returns the countdown, or `undefined` when the date is absent or past.
@@ -50,12 +54,11 @@ export function resetParts(resetsAt: string | undefined, now: number = Date.now(
   if (resetsAt === undefined) return undefined
   const at = Date.parse(resetsAt)
   if (!Number.isFinite(at) || at <= now) return undefined
-  const ms = at - now
-  const minutes = Math.ceil(ms / 60_000)
+  const minutes = Math.max(1, Math.round((at - now) / 60_000))
   if (minutes < 60) return { n: minutes, unit: 'm' }
-  const hours = Math.ceil(minutes / 60)
+  const hours = Math.round(minutes / 60)
   if (hours < 48) return { n: hours, unit: 'h' }
-  return { n: Math.ceil(hours / 24), unit: 'd' }
+  return { n: Math.round(hours / 24), unit: 'd' }
 }
 
 /** One bar of the five-segment usage gauge; 0–4 filled. */
@@ -107,17 +110,44 @@ export function requestPlaceLabel(row: TraceRequestRow): string {
   return [row.provider, row.account].filter((part) => part !== undefined && part !== '').join(' · ')
 }
 
+/** A counter rounded for display: at most two decimals, non-finite as absent. */
+function roundAmount(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined
+}
+
+/** Which locale template words a candidate's usage. */
+export type UsageTemplate = 'trace.candidate.amountPct' | 'trace.candidate.amount' | 'trace.candidate.used'
+
+/** One candidate's usage line: the template to fill and its params. */
+export interface UsageText {
+  readonly template: UsageTemplate
+  readonly params: Record<string, string | number>
+}
+
 /**
- * Whether a quota window is the account's aggregate. Vendors that meter a
- * base allowance plus an extra one publish "Credits", "Extra credits" and
- * "Total credits" side by side; the aggregate is the one that covers what
- * routing actually weighs.
- * @param windowName - the window's own name, or undefined when it has none.
- * @returns true for "Total credits", "Grand total", … .
+ * Word one candidate's usage. A counted window (an amount/limit pair) says
+ * its figures *and* its share — Magpie's own page leads with the percent,
+ * and the pair alone made a credits account the only row in the popover
+ * without one. A window that reports only a share says just that.
+ * @param facts - the candidate's counters; `unit` already localized.
+ * @returns the template and params, or `undefined` when there is nothing to say.
  */
-export function isTotalWindowName(windowName: string | undefined): boolean {
-  if (windowName === undefined) return false
-  return /^(grand\s+)?total\b/i.test(windowName.trim())
+export function usageText(facts: {
+  readonly amount?: number
+  readonly limit?: number
+  readonly unit?: string
+  readonly usedPct?: number
+}): UsageText | undefined {
+  const amount = roundAmount(facts.amount)
+  const limit = roundAmount(facts.limit)
+  const usedPct = facts.usedPct
+  const unit = facts.unit ?? ''
+  if (amount !== undefined && limit !== undefined) {
+    return usedPct !== undefined
+      ? { template: 'trace.candidate.amountPct', params: { amount, limit, unit, n: usedPct } }
+      : { template: 'trace.candidate.amount', params: { amount, limit, unit } }
+  }
+  return usedPct !== undefined ? { template: 'trace.candidate.used', params: { n: usedPct } } : undefined
 }
 
 /** The header line's compressed counts, locale-ready. */

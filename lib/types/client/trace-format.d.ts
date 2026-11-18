@@ -24,10 +24,14 @@ export declare function durationParts(ms: number | undefined): DurationParts | u
 /** How long until a reset is worded: pieces a locale template fills in. */
 export type ResetParts = DurationParts;
 /**
- * Compress the wait until a quota window resets. Rounded *up* — "还有 13
- * 小时" must not drop to 0 while the hour is still running, and a day that
- * ends tomorrow stays "1 天". Sub-minute waits read as one minute: the
- * popover refreshes more slowly than that, so finer wording would lie.
+ * Compress the wait until a quota window resets, word for word the way
+ * Magpie's own page does it (`untilText` in its app.js): round to the
+ * nearest unit, minutes below an hour, hours below two days, days past
+ * that. The popover sits beside that page, so both must say the same
+ * number — rounding each step up here instead made a reset 12 days and 8
+ * hours away read "13 天" against Magpie's "12 天". Sub-minute waits read
+ * as one minute rather than zero, since the popover refreshes more slowly
+ * than that.
  * @param resetsAt - the reset instant (RFC 3339) or undefined.
  * @param now - the reference instant (epoch ms); defaults to the caller's clock.
  * @returns the countdown, or `undefined` when the date is absent or past.
@@ -58,15 +62,27 @@ export declare function requestTone(row: TraceRequestRow): RequestTone;
 export declare function requestModelLabel(row: TraceRequestRow): string;
 /** Where a request was served, as one "provider · account" string ('' when unknown). */
 export declare function requestPlaceLabel(row: TraceRequestRow): string;
+/** Which locale template words a candidate's usage. */
+export type UsageTemplate = 'trace.candidate.amountPct' | 'trace.candidate.amount' | 'trace.candidate.used';
+/** One candidate's usage line: the template to fill and its params. */
+export interface UsageText {
+    readonly template: UsageTemplate;
+    readonly params: Record<string, string | number>;
+}
 /**
- * Whether a quota window is the account's aggregate. Vendors that meter a
- * base allowance plus an extra one publish "Credits", "Extra credits" and
- * "Total credits" side by side; the aggregate is the one that covers what
- * routing actually weighs.
- * @param windowName - the window's own name, or undefined when it has none.
- * @returns true for "Total credits", "Grand total", … .
+ * Word one candidate's usage. A counted window (an amount/limit pair) says
+ * its figures *and* its share — Magpie's own page leads with the percent,
+ * and the pair alone made a credits account the only row in the popover
+ * without one. A window that reports only a share says just that.
+ * @param facts - the candidate's counters; `unit` already localized.
+ * @returns the template and params, or `undefined` when there is nothing to say.
  */
-export declare function isTotalWindowName(windowName: string | undefined): boolean;
+export declare function usageText(facts: {
+    readonly amount?: number;
+    readonly limit?: number;
+    readonly unit?: string;
+    readonly usedPct?: number;
+}): UsageText | undefined;
 /** The header line's compressed counts, locale-ready. */
 export interface TotalsParts {
     readonly requests: number;

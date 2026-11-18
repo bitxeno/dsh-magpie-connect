@@ -30,7 +30,7 @@ import {
   durationParts,
   maskUser,
   resetParts,
-  isTotalWindowName,
+  usageText,
   type RequestTone,
 } from './trace-format.ts'
 import {
@@ -384,14 +384,18 @@ const candidateNameStyle = {
   color: 'var(--dsw-alias-label-primary, #e6ebf2)',
 } as const
 
+/**
+ * The detail line wraps rather than ellipsizes: a counted window says
+ * "3272.42 / 4291 积分 · 已用 76% · 12 天后重置", which is wider than the
+ * 320px popover's card, and a clipped reset countdown is the one part a
+ * reader cannot guess.
+ */
 const candidateDetailStyle = {
   marginTop: '3px',
   fontSize: '11px',
   lineHeight: '16px',
   color: 'var(--dsw-alias-label-tertiary, #8a94a6)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+  overflowWrap: 'break-word',
 } as const
 
 const candidateGaugeStyle = {
@@ -689,19 +693,12 @@ function candidateDetail(candidate: TraceCandidate): string {
     const resetText = renew !== undefined ? text('trace.quotaReset', { d: formatDuration(renew, 'reset') }) : ''
     return [reason, resetText].filter(Boolean).join(' · ')
   }
-  const amount = candidate.amount !== undefined && Number.isFinite(candidate.amount) ? Math.round(candidate.amount * 100) / 100 : undefined
-  const limit = candidate.limit !== undefined && Number.isFinite(candidate.limit) ? Math.round(candidate.limit * 100) / 100 : undefined
-  const windowName = candidate.windowName
+  const amount = candidate.amount
+  const limit = candidate.limit
   const unitKey = candidate.unit !== undefined && candidate.unit !== '' ? `trace.unit.${candidate.unit}` : ''
-  // An aggregate window's unit reads "total credits" (总积分) rather than
-  // plain "credits": the account meters a base allowance plus an extra one,
-  // and 2630.75 / 4091 is the sum of both, not the base window alone.
-  const unit = isTotalWindowName(windowName) && unitKey !== '' && text(`${unitKey}.total`) !== `${unitKey}.total`
-    ? text(`${unitKey}.total`)
-    : unitKey !== '' && text(unitKey) !== unitKey ? text(unitKey) : (candidate.unit ?? '')
-  const amountText = amount !== undefined && limit !== undefined
-    ? text('trace.candidate.amount', { amount, limit, unit }).trim()
-    : (candidate.usedPct !== undefined ? text('trace.candidate.used', { n: candidate.usedPct }) : '')
+  const unit = unitKey !== '' && text(unitKey) !== unitKey ? text(unitKey) : (candidate.unit ?? '')
+  const usage = usageText({ amount, limit, unit, usedPct: candidate.usedPct })
+  const amountText = usage !== undefined ? text(usage.template, usage.params).trim() : ''
   const renew = candidate.renews?.[0] !== undefined ? resetParts(candidate.renews[0]) : undefined
   const resetText = renew !== undefined ? text('trace.quotaReset', { d: formatDuration(renew, 'reset') }) : ''
   return [amountText, resetText].filter(Boolean).join(' · ')
