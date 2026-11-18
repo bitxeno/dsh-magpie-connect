@@ -116,15 +116,108 @@ function statusForStatusCode(code: number): TraceStatus {
   return 'unknown'
 }
 
-/** Fetch one Magpie Web endpoint, carrying its port-scoped web cookie. */
+/**
+ * Budget for probing an alternate Web port. Kept well under
+ * {@link TRACE_TIMEOUT_MS}: a black-holed port must not eat the trace's own
+ * timeout, which is shared with the gateway reads.
+ */
+const WEB_PROBE_TIMEOUT_MS = 1_500
+
+/** Magpie Web's usual listen ports, tried as a last-resort cookie name, commonest first. */
+const WEB_COOKIE_FALLBACK_PORTS = ['3430', '443', '80'] as const
+
+/**
+ * The cookie name Magpie Web most likely expects for a base: it names the
+ * cookie after the port it listens on (`magpie_web_3430`). A direct connection
+ * matches this guess; behind a reverse proxy the external port differs, so it
+ * is only a starting point {@link discoverWebCookieName} corrects.
+ */
+function guessedWebCookie(base: string): string {
+  try {
+    const url = new URL(base)
+    return `magpie_web_${url.port || (url.protocol === 'https:' ? '443' : '80')}`
+  } catch {
+    return 'magpie_web_3430'
+  }
+}
+
+/** Base -> the cookie name Magpie Web answered with, so later reads skip the 401 probe. */
+const webCookieNames = new Map<string, string>()
+
+/** Base -> the Web root that answered, so a split layout probes its Web port only once. */
+const webBasesResolved = new Map<string, string>()
+
+/** Test hook: forget learned cookie names and Web roots between cases. */
+export function __resetTraceCaches(): void {
+  webCookieNames.clear()
+  webBasesResolved.clear()
+}
+
+/**
+ * Learn Magpie Web's cookie name from its own sign-in link. The name is
+ * `magpie_web_<its listen port>`, and a reverse proxy hides that port, so the
+ * external URL cannot tell us. `GET /?k=<webKey>` makes Magpie set the cookie
+ * (its normal sign-in); the redirect is not followed — only the Set-Cookie
+ * name is read. Returns `undefined` when the response carries no such cookie.
+ */
+async function discoverWebCookieName(base: string, webKey: string, signal: AbortSignal): Promise<string | undefined> {
+  try {
+    const response = await fetch(`${base.replace(/\/+$/, '')}/?k=${encodeURIComponent(webKey)}`, {
+      redirect: 'manual',
+      cache: 'no-store',
+      signal,
+    })
+    const match = /magpie_web_[A-Za-z0-9._-]+/.exec(response.headers.get('set-cookie') ?? '')
+    return match?.[0]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * GET one Magpie Web path carrying the Web Key. Magpie names the cookie after
+ * its listen port; when a reverse proxy hides that port the URL-derived name is
+ * refused with 401. On a 401 this asks the sign-in link for the real name and
+ * retries once, then falls back to the common Web ports, caching whichever name
+ * won so the next read is a single request. A missing cookie and a wrong cookie
+ * both answer 401, so trying a few names is cheap.
+ */
+async function fetchWebResponse(base: string, webKey: string, path: string, accept: string, signal: AbortSignal): Promise<Response> {
+  const tried: string[] = []
+  const attempt = (name: string): Promise<Response> => {
+    tried.push(name)
+    return fetch(`${base}${path}`, {
+      headers: { cookie: `${name}=${webKey}`, accept },
+      cache: 'no-store',
+      signal,
+    })
+  }
+  const cached = webCookieNames.get(base)
+  let response = await attempt(cached ?? guessedWebCookie(base))
+  if (response.status === 401) {
+    const discovered = await discoverWebCookieName(base, webKey, signal)
+    if (discovered !== undefined && !tried.includes(discovered)) {
+      response = await attempt(discovered)
+    }
+    if (response.status === 401) {
+      for (const port of WEB_COOKIE_FALLBACK_PORTS) {
+        const name = `magpie_web_${port}`
+        if (tried.includes(name)) continue
+        response = await attempt(name)
+        if (response.status !== 401) break
+      }
+    }
+  }
+  if (response.ok) {
+    const winner = tried[tried.length - 1]
+    if (winner !== undefined) webCookieNames.set(base, winner)
+  }
+  return response
+}
+
+/** Fetch one Magpie Web endpoint, carrying the Web Key in Magpie's own cookie name. */
 async function fetchWebJson(base: string, webKey: string, path: string, signal: AbortSignal): Promise<LooseRecord> {
-  const url = new URL(base)
-  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
-  const response = await fetch(`${base}${path}`, {
-    headers: { cookie: `magpie_web_${port}=${webKey}`, accept: 'application/json' },
-    cache: 'no-store',
-    signal,
-  })
+  const response = await fetchWebResponse(base, webKey, path, 'application/json', signal)
   if (!response.ok) {
     const error = new Error(`Magpie Web HTTP ${response.status} ${path}`) as Error & { statusCode?: number }
     error.statusCode = response.status
@@ -134,42 +227,58 @@ async function fetchWebJson(base: string, webKey: string, path: string, signal: 
 }
 
 /**
- * Magpie's normal Web UI port is 3430. Some installs reverse-proxy the Web
- * routes onto the API root; try that first, then the default Web port on the
- * same host. This keeps the setting to one Web Key while supporting the
- * split API (:80/:3425) + Web (:3430) layout too.
+ * Web roots to try: the configured base first, then Magpie's usual Web port
+ * (:3430) on the same host as a fallback. This keeps the setting to one Web Key
+ * while still supporting the split API (:80/:3425) + Web (:3430) layout. The
+ * configured base leads on purpose: a base that already answers must not be
+ * preceded by a probe, or a black-holed :3430 would cost every read its timeout
+ * before the real address is ever tried.
  */
 function webBases(base: string): string[] {
-  // In Magpie's split layout, the API endpoint (e.g. :80 or :3425) and Web
-  // console (:3430) share a hostname. If the configured endpoint is already
-  // on :3430, use it; otherwise try the supplied root first, then Web's port.
-  const candidates: string[] = []
+  const candidates: string[] = [base]
   try {
     const url = new URL(base)
-    if (url.port === '3430') return [base]
-    url.port = '3430'
-    candidates.push(`${url.origin}${url.pathname.replace(/\/+$/, '')}`)
-    candidates.push(base)
+    if (url.port !== '3430') {
+      url.port = '3430'
+      candidates.push(`${url.origin}${url.pathname.replace(/\/+$/, '')}`)
+    }
   } catch {
     return [base]
   }
   return [...new Set(candidates)]
 }
 
+/** {@link webBases}, but a Web root that already answered leads, so its port probe happens once. */
+function orderedWebBases(base: string): string[] {
+  const bases = webBases(base)
+  const known = webBasesResolved.get(base)
+  return known !== undefined && bases.includes(known) ? [known, ...bases.filter((b) => b !== known)] : bases
+}
+
+/** The signal for one Web try: the configured base gets the full budget, a probe is cut short. */
+function webTrySignal(signal: AbortSignal, index: number): AbortSignal {
+  if (index === 0) return signal
+  const budget = AbortSignal.timeout(WEB_PROBE_TIMEOUT_MS)
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, budget]) : budget
+}
+
 /** Read full trace from the same API host, trying its Web port if split. */
 async function fetchFullWebTrace(base: string, webKey: string, signal: AbortSignal): Promise<{ trace: LooseRecord; base: string }> {
   let lastError: unknown
-  for (const candidate of webBases(base)) {
+  for (const [index, candidate] of orderedWebBases(base).entries()) {
     try {
-      const trace = await fetchWebJson(candidate, webKey, `${WEB_TRACE_PATH}?after=0`, signal)
+      const trace = await fetchWebJson(candidate, webKey, `${WEB_TRACE_PATH}?after=0`, webTrySignal(signal, index))
       // The Web Console's traceJSON has no `object` field (unlike the
       // gateway's loopback /v1/magpie/trace); routes[] is the reliable shape.
       if (!Array.isArray(trace.routes)) {
         throw new Error('Magpie Web returned an unexpected trace shape')
       }
+      webBasesResolved.set(base, candidate)
       return { trace, base: candidate }
     } catch (error) {
-      if (isAbort(error)) throw error
+      // Only the caller's own abort ends the walk; a probe's short budget
+      // timing out on one candidate must let the next base be tried.
+      if (signal.aborted) throw error
       lastError = error
     }
   }
@@ -181,15 +290,9 @@ function routingUrlFor(base: string): string {
   return `${base.replace(/\/+$/, '')}/?view=routing`
 }
 
-/** Fetch one binary asset from Magpie Web, carrying its port-scoped Web cookie. */
+/** Fetch one binary asset from Magpie Web, carrying the Web Key in Magpie's own cookie name. */
 async function fetchWebBinary(base: string, webKey: string, path: string, signal: AbortSignal): Promise<{ body: ArrayBuffer; contentType: string }> {
-  const url = new URL(base)
-  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
-  const response = await fetch(`${base}${path}`, {
-    headers: { cookie: `magpie_web_${port}=${webKey}`, accept: 'image/svg+xml,image/png,*/*' },
-    cache: 'no-store',
-    signal,
-  })
+  const response = await fetchWebResponse(base, webKey, path, 'image/svg+xml,image/png,*/*', signal)
   if (!response.ok) {
     const error = new Error(`Magpie Web HTTP ${response.status} ${path}`) as Error & { statusCode?: number }
     error.statusCode = response.status
@@ -223,11 +326,14 @@ export async function fetchWebIcon(
   const ext = PNG_ICONS.has(safe) ? 'png' : 'svg'
   const path = `/icons/${safe}.${ext}`
   let lastError: unknown
-  for (const candidate of webBases(base)) {
+  for (const [index, candidate] of orderedWebBases(base).entries()) {
     try {
-      return await fetchWebBinary(candidate, webKey, path, signal)
+      const icon = await fetchWebBinary(candidate, webKey, path, webTrySignal(signal, index))
+      webBasesResolved.set(base, candidate)
+      return icon
     } catch (error) {
-      if (isAbort(error)) throw error
+      // As in fetchFullWebTrace: a probe's own timeout is not the caller's abort.
+      if (signal.aborted) throw error
       lastError = error
     }
   }

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  __resetTraceCaches,
   deriveGatewayBase,
   fetchTraceView,
   fetchWebIcon,
@@ -597,4 +598,136 @@ test('isTotalWindowName spots the aggregate window only', () => {
   assert.equal(isTotalWindowName('Extra credits'), false)
   assert.equal(isTotalWindowName('30 days'), false)
   assert.equal(isTotalWindowName(undefined), false)
+})
+
+/** A gateway-view reply with no data, for the endpoints that run alongside the web trace. */
+function emptyGatewayBody(): Response {
+  return new Response(JSON.stringify({ rows: [], calls: 0, errors: 0, retried: 0, canceled: 0, data: [] }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+/** The cookie a request carries, from the plain-object headers this plugin sends. */
+function cookieOf(init: RequestInit | undefined): string {
+  return ((init?.headers ?? {}) as Record<string, string>).cookie ?? ''
+}
+
+test('fetchTraceView learns the Web cookie name behind a 443 reverse proxy', async () => {
+  __resetTraceCaches()
+  const saved = globalThis.fetch
+  const signIns: string[] = []
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const target = String(url)
+    // The sign-in link Magpie answers with its real cookie name (its listen port).
+    if (target.includes('/?k=')) {
+      signIns.push(target)
+      return new Response('sign in', {
+        status: 303,
+        headers: { 'set-cookie': 'magpie_web_3426=web-secret; Path=/; HttpOnly; SameSite=Lax', location: '/' },
+      })
+    }
+    if (target.includes('/api/gateway/trace')) {
+      // The external port derivation (443) is refused; the listen-port name is accepted.
+      if (cookieOf(init).includes('magpie_web_3426=')) {
+        return new Response(JSON.stringify({
+          seq: 1,
+          routes: [{ id: 1, time: 't', session: 'dsh-1', model: 'group/bot', done: true, status: 200, ms: 5 }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'no cookie' }), { status: 401 })
+    }
+    return emptyGatewayBody()
+  }) as typeof fetch
+  try {
+    const first = await fetchTraceView({ baseUrl: 'https://magpie.example.com/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-1', 'web-secret')
+    assert.equal(first.status, 'ok')
+    assert.equal(first.webTraceError, undefined)
+    assert.equal(first.sessionTrace?.id, 1)
+    assert.equal(signIns.length, 1)
+    // The learned name is cached: the next read goes straight to it, no sign-in.
+    const second = await fetchTraceView({ baseUrl: 'https://magpie.example.com/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-1', 'web-secret')
+    assert.equal(second.sessionTrace?.id, 1)
+    assert.equal(signIns.length, 1)
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('fetchWebIcon learns the Web cookie name behind a 443 reverse proxy', async () => {
+  __resetTraceCaches()
+  const saved = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const target = String(url)
+    if (target.includes('/?k=')) {
+      return new Response('sign in', {
+        status: 303,
+        headers: { 'set-cookie': 'magpie_web_3426=web-secret; Path=/', location: '/' },
+      })
+    }
+    if (target.includes('/icons/workbuddy.svg')) {
+      if (cookieOf(init).includes('magpie_web_3426=')) {
+        return new Response('<svg>ok</svg>', { status: 200, headers: { 'content-type': 'image/svg+xml' } })
+      }
+      return new Response('no', { status: 401 })
+    }
+    return new Response('no', { status: 404 })
+  }) as typeof fetch
+  try {
+    const icon = await fetchWebIcon('https://magpie.example.com', 'web-secret', 'workbuddy', new AbortController().signal)
+    assert.equal(icon.contentType, 'image/svg+xml')
+    assert.equal(new TextDecoder().decode(icon.body), '<svg>ok</svg>')
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('fetchTraceView tries the configured base before the :3430 fallback', async () => {
+  __resetTraceCaches()
+  const saved = globalThis.fetch
+  const traceUrls: string[] = []
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const target = String(url)
+    if (target.includes('/api/gateway/trace')) {
+      traceUrls.push(target)
+      if (cookieOf(init).includes('magpie_web_3426=')) {
+        return new Response(JSON.stringify({ seq: 1, routes: [{ id: 1, time: 't', session: 'dsh-1', model: 'group/bot', done: true, status: 200, ms: 5 }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'no cookie' }), { status: 401 })
+    }
+    return emptyGatewayBody()
+  }) as typeof fetch
+  try {
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan:3426/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-1', 'web-secret')
+    assert.equal(view.sessionTrace?.id, 1)
+    // The answering base leads, so the black-hole-prone :3430 is never probed.
+    assert.equal(traceUrls.length, 1)
+    assert.ok(traceUrls[0]?.startsWith('http://api.lan:3426/'))
+    assert.ok(!traceUrls.some((url) => url.includes(':3430')))
+  } finally {
+    globalThis.fetch = saved
+  }
+})
+
+test('fetchTraceView still falls back to :3430 when the configured base has no Web routes', async () => {
+  __resetTraceCaches()
+  const saved = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    const target = String(url)
+    if (target.includes(':3425/api/gateway/trace')) throw new TypeError('fetch failed')
+    if (target.includes(':3430/api/gateway/trace')) {
+      if (cookieOf(init).includes('magpie_web_3430=')) {
+        return new Response(JSON.stringify({ seq: 1, routes: [{ id: 2, time: 't', session: 'dsh-1', model: 'group/bot', done: true, status: 200, ms: 5 }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ error: 'no cookie' }), { status: 401 })
+    }
+    return emptyGatewayBody()
+  }) as typeof fetch
+  try {
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan:3425/v1', apiKey: 'k' }, new AbortController().signal, 'dsh-1', 'web-secret')
+    assert.equal(view.webTraceError, undefined)
+    assert.equal(view.sessionTrace?.id, 2)
+  } finally {
+    globalThis.fetch = saved
+  }
 })
