@@ -31,6 +31,8 @@ export declare const TRACE_TIMEOUT_MS = 8000;
  * @returns the base for `/v1/magpie/*` (origin plus any non-version prefix path), or `undefined` for values that never were URLs.
  */
 export declare function deriveGatewayBase(baseUrl: string): string | undefined;
+/** Test hook: forget learned cookie names and Web roots between cases. */
+export declare function __resetTraceCaches(): void;
 /**
  * Read one provider icon from Magpie Web through the stored Web Key. The
  * browser asks the plugin's same-origin `/api/magpie-icon` route instead of
