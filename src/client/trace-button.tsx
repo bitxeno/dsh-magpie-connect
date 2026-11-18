@@ -40,6 +40,7 @@ import {
   readViewport,
   type PopupPlacement,
 } from './trace-placement.ts'
+import { buildWireState, NO_WIRES, sameWires, WIRE_GUTTER, type TraceWireState } from './trace-wires.ts'
 
 /** How long one refresh cycle waits while the popover is open (desktop). */
 const DESKTOP_REFRESH_MS = 5_000
@@ -500,18 +501,6 @@ function SessionRouteRow(props: { route: SessionRouteView }): unknown {
   )
 }
 
-interface TraceWirePath {
-  readonly d: string
-  readonly active: boolean
-  readonly live: boolean
-}
-
-interface TraceWireState {
-  readonly width: number
-  readonly height: number
-  readonly paths: readonly TraceWirePath[]
-}
-
 /** Localize a Magpie routing mode, defaulting to Smart for `""`. */
 function routingLabel(routing: string | undefined): string {
   const key = `trace.routing.${routing || 'smart'}`
@@ -548,47 +537,64 @@ function RoutingGroupCard(props: { key?: string; section: TraceRoutingSection })
   const showHeader = section.hideHeader !== true
   const activeIndex = section.candidates.findIndex((candidate) => candidate.outcome === 'answered' || candidate.outcome === 'processing')
   const groupRef = useRef<HTMLDivElement | null>(null)
-  const [wires, setWires] = useState<TraceWireState>({ width: 0, height: 0, paths: [] })
+  const [wires, setWires] = useState<TraceWireState>(NO_WIRES)
 
-  // Measure candidate rows and draw Magpie's cubic S wires from the group
-  // header centre to each card centre. A pixel-sized viewBox means no path
-  // scaling, so rounded corners/dash phase stay aligned with the cards.
+  // Draw Magpie's cubic S wires from the group header into each candidate
+  // card. Only each card's mid-height has to be measured: the x's are the
+  // fixed gutter constants in trace-wires.ts, and the SVG is pinned to that
+  // same gutter, so its viewBox always matches its element box and the scale
+  // stays 1:1. That is what keeps the wires still — the popover's width clamp
+  // lands *after* this effect runs, so a viewBox spanning the full group would
+  // be stretched to the clamped box and every wire would slide sideways by the
+  // difference (see trace-wires.ts).
   useLayoutEffect(() => {
     const container = groupRef.current
     if (container === null || !showHeader) {
-      setWires({ width: 0, height: 0, paths: [] })
+      setWires(NO_WIRES)
       return
     }
     const measure = (): void => {
-      const rect = container.getBoundingClientRect()
       const rows = Array.from(container.querySelectorAll('[data-magpie-candidate]')) as HTMLElement[]
-      const x0 = 10
-      const x3 = 26
-      const mx = (x0 + x3) / 2
-      const y0 = 16
-      const paths = rows.map((row, index) => {
-        const card = row.getBoundingClientRect()
-        const y3 = card.top - rect.top + card.height / 2
-        return {
-          d: `M${x0} ${y0} C${mx} ${y0} ${mx} ${y3} ${x3} ${y3}`,
-          active: index === activeIndex,
-          live: section.candidates[index]?.outcome === 'processing',
-        }
-      })
-      setWires({ width: rect.width, height: rect.height, paths })
+      const next = buildWireState(
+        container.getBoundingClientRect(),
+        rows.map(row => row.getBoundingClientRect()),
+        activeIndex,
+        section.candidates.map(candidate => candidate.outcome),
+      )
+      // Keep the previous object when nothing changed: a fresh one on every
+      // tick re-renders the paths for no reason, and a needless re-render is
+      // what made the stale first frame visible.
+      setWires(current => (sameWires(current, next) ? current : next))
     }
     measure()
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
+    // The popover is clamped by its parent and can be re-opened from cached
+    // data, so the group's real size may settle after this effect. Follow it.
+    const observer = new ResizeObserver(measure)
+    observer.observe(container)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+    }
   }, [showHeader, activeIndex, section.candidates])
 
   return (
     <div ref={groupRef} style={traceGroupStyle}>
-      {showHeader && wires.width > 0 ? (
+      {showHeader && wires.height > 0 ? (
         <svg
           aria-hidden="true"
-          viewBox={`0 0 ${wires.width} ${wires.height}`}
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}
+          viewBox={`0 0 ${WIRE_GUTTER} ${wires.height}`}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            // An explicit box equal to the viewBox: no aspect-ratio fitting,
+            // so no scale — a stroke stays 1.5px and a wire stays put.
+            width: `${WIRE_GUTTER}px`,
+            height: `${wires.height}px`,
+            overflow: 'visible',
+            pointerEvents: 'none',
+          }}
         >
           {wires.paths.map((wire, index) => (
             <path
