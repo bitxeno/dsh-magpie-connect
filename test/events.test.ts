@@ -120,6 +120,27 @@ test('finish reasons: length, aborted, rate limit and other errors', async () =>
   assert.equal(failureOf(expectFinish(server[1])).code, 'SERVER')
 })
 
+test('free-tier quota exhaustion carrying a 429 prefix is not classified as RATE_LIMIT', async () => {
+  // Exact shape emitted by pi-ai's retry cap for a gateway FreeUsageLimitError.
+  const message = 'Server requested 3517s retry delay (max: 60s). 429 OpenCode Bridge: Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going (resets at 2026-11-21 08:00 UTC+8) (out of its allowance: not asked again before 18:13 UTC+8)'
+  const chunks = await collect([event({ stopReason: 'error', errorMessage: message })])
+  const failure = failureOf(expectFinish(chunks[1]))
+  assert.equal(failure.code, 'QUOTA_EXCEEDED')
+  assert.equal(failure.message, message)
+})
+
+test('other allowance/quota wordings also map to QUOTA_EXCEEDED ahead of 429', async () => {
+  for (const errorMessage of [
+    'HTTP 429 insufficient_quota',
+    '429 quota_exceeded: out of budget',
+    '429 usage_limit_exceeded',
+    'FreeUsageLimitError: 429 too many requests',
+  ]) {
+    const chunks = await collect([event({ stopReason: 'error', errorMessage })])
+    assert.equal(failureOf(expectFinish(chunks[1])).code, 'QUOTA_EXCEEDED', errorMessage)
+  }
+})
+
 test('zero-cache usage omits the optional keys', async () => {
   const chunks = await collect([done()])
   assert.deepEqual(chunks[0], { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } })

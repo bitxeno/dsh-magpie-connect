@@ -4,6 +4,17 @@
 正文发布，也是插件市场"更新了什么"弹窗显示的内容。最新版本在最上面；
 小节标题写 `## v<版本号>`（如 `## v0.7.0`），与 tag 一致。
 
+## v0.7.4
+
+### 修复
+
+- **免费额度耗尽仍会触发五次无谓重试**：网关返回的 `FreeUsageLimitError` 经
+  pi-ai 封装后错误文本以「429」开头，旧的分类只认 `quota/insufficient/billing`
+  等词，没覆盖「Free usage limit reached」「out of its allowance」这类措辞，
+  于是被归成 `RATE_LIMIT`——它正在 DSH 的默认可重试集合里，一次终态的额度
+  耗尽被当成限流重试五次。现在这些措辞优先归类为 `QUOTA_EXCEEDED`，不在可
+  重试集合内，与 dsh-opencode-bridge 的处理一致，额度耗尽直接结束本轮不再重试
+
 ## v0.7.3
 
 ### 修复

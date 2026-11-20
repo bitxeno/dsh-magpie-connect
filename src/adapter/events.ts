@@ -59,9 +59,20 @@ const CONTEXT_WINDOW_EXCEEDED = 'CONTEXT_WINDOW_EXCEEDED'
 const EMPTY_RESPONSE = 'EMPTY_RESPONSE'
 const QUOTA_EXCEEDED = 'QUOTA_EXCEEDED'
 
+/**
+ * Quota / free-tier allowance exhaustion is permanent for the current window,
+ * so it must never reach the host's retryable code set. This check runs BEFORE
+ * the generic 429 rule: gateway errors arrive as
+ * "Server requested …s retry delay (max: 60s). 429 … Free usage limit reached …
+ * out of its allowance …", and a bare 429 would otherwise classify them as
+ * RATE_LIMIT — which IS in the host's default retryableCodes — turning one
+ * terminal quota failure into five pointless retries.
+ */
+const QUOTA_EXHAUSTED_PATTERN = /insufficient|quota|billing|free\s+usage\s+limit|usage\s+limit\s+(?:reached|exceeded)|usage_limit_exceeded|out\s+of\s+(?:its\s+)?allowance|FreeUsageLimitError|QuotaExceededError/i
+
 function classifyError(text: string): string {
   if (/\b(?:401|403)\b/.test(text)) return 'AUTH'
-  if (/insufficient|quota|billing/i.test(text)) return QUOTA_EXCEEDED
+  if (QUOTA_EXHAUSTED_PATTERN.test(text)) return QUOTA_EXCEEDED
   if (/\b429\b|rate.?limit/i.test(text)) return 'RATE_LIMIT'
   if (/\b413\b|payload too large|request body too large/i.test(text)) return 'INVALID_REQUEST'
   if (/\b400\b|invalid.?request/i.test(text)) return 'INVALID_REQUEST'
