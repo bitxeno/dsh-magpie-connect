@@ -1,6 +1,6 @@
 import { ModelCatalog } from './adapter/catalog.ts';
 import { type DshMagpieConnectConfig } from './config.ts';
-import { SettingsStore } from './settings.ts';
+import { SettingsStore, type EffectiveSearchSettings } from './settings.ts';
 /**
  * dsh-magpie-connect DSH cordis plugin entry.
  *
@@ -57,6 +57,15 @@ export declare const DISCOVER_API = "/api/magpie-discover";
 export declare const TRACE_API = "/api/magpie-trace";
 /** Same-origin proxy for Magpie Web provider icons; the Web Key stays on the Host. */
 export declare const ICON_API = "/api/magpie-icon";
+/** 设置页网页搜索测试路由（在 Host 侧使用当前表单或已保存凭据执行一次试探搜索）。 */
+export declare const SEARCH_TEST_API = "/api/magpie-search-test";
+/** DSH `web` 服务与本插件搜索提供方的绑定状态。 */
+export interface WebSearchBindingState {
+    registered: boolean;
+    switchable: boolean;
+    active: boolean;
+    activeProvider?: string;
+}
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
     store: SettingsStore;
@@ -65,11 +74,17 @@ export interface SettingsBackend {
         baseUrl: string;
         apiKey: string;
     };
+    patchSearch: EffectiveSearchSettings;
+    searchTimeoutMs: number;
+    providerId: string;
     effective: () => {
         baseUrl: string;
         apiKey: string;
     };
+    effectiveSearch: () => EffectiveSearchSettings;
     applyPageSettings: () => void;
+    readWebSearchState: () => WebSearchBindingState;
+    setWebSearchActive: (active: boolean) => Promise<void>;
 }
 interface ModelRow {
     /** Route id, used by the allowlist, requests and session history. */
@@ -95,6 +110,8 @@ interface ModelRow {
 }
 /** One discovered candidate: a {@link ModelRow} without this plugin's own allowlist flag. */
 export type CandidateRow = Omit<ModelRow, 'enabled'>;
+/** @internal 测试辅助钩子：重置等待中的搜索提供方接管队列。 */
+export declare function __resetSearchProviders(): void;
 /** @internal Test hook: forget installed routes so the next apply reinstalls. */
 export declare function __resetSettingsRoutes(): void;
 export declare function apply(ctx: PluginContext, config?: DshMagpieConnectConfig): {
@@ -104,5 +121,6 @@ export declare function apply(ctx: PluginContext, config?: DshMagpieConnectConfi
 };
 export { MagpieAdapter } from './adapter/magpie-adapter.ts';
 export { ModelCatalog } from './adapter/catalog.ts';
-export { SettingsStore, isConfigured, resolveEffectiveEndpoint } from './settings.ts';
+export { MagpieSearchProvider, MagpieSearchError, mapAnthropicSearchResponse, parseMagpieMcpSearchText, searchViaMagpieMcp, searchViaMagpieModel, } from './search.ts';
+export { SettingsStore, isConfigured, resolveEffectiveEndpoint, resolveEffectiveSearchSettings, type MagpieSearchMode, } from './settings.ts';
 export { resolveConfig, type DshMagpieConnectConfig, } from './config.ts';

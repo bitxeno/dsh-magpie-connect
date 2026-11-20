@@ -4,9 +4,12 @@ import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { createWriteQueue } from './write-queue.ts'
 import { PENDING_RETRY_DELAY_MS, shouldRetryPending, type SnapshotStatus } from './load-retry.ts'
-import type { MagpieSettingsView } from '../settings.ts'
+import type { MagpieSearchMode, MagpieSettingsView } from '../settings.ts'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
+
+/** 搜索模型下拉框中触发手动输入自定义模型 ID 的哨兵值。 */
+const CUSTOM_SEARCH_MODEL = '__custom__'
 
 export type { ModelRow }
 
@@ -46,6 +49,18 @@ const css: Record<string, Record<string, string | number>> = {
   row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   field: { display: 'flex', flexDirection: 'column', gap: 8 },
   label: { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-secondary)' },
+  select: {
+    width: '100%',
+    height: 36,
+    padding: '0 10px',
+    border: '1px solid var(--dsw-alias-border-l2)',
+    borderRadius: 8,
+    background: 'var(--dsw-alias-bg-layer-1)',
+    color: 'var(--dsw-alias-label-primary)',
+    fontSize: 13,
+    lineHeight: '20px',
+    boxSizing: 'border-box',
+  },
   hint: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-tertiary)' },
   error: { margin: 0, whiteSpace: 'pre-wrap', color: 'var(--dsw-alias-label-error, var(--dsw-alias-state-danger-label))' },
   ok: { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-state-success-label, var(--dsw-alias-label-primary))' },
@@ -130,6 +145,15 @@ async function saveWebKey(webKey: string): Promise<MagpieSettingsView> {
   return (await request('/api/magpie-settings', 'POST', { webKey })) as MagpieSettingsView
 }
 
+/** 单独保存网页搜索设置（与连接凭据隔离，不会误提交编辑中的地址或 Key）。 */
+async function saveSearchSettings(payload: {
+  searchMode?: MagpieSearchMode
+  searchModel?: string
+  searchActive?: boolean
+}): Promise<MagpieSettingsView> {
+  return (await request('/api/magpie-settings', 'POST', payload)) as MagpieSettingsView
+}
+
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
@@ -155,12 +179,25 @@ export function MagpieSettings(): unknown {
   const [webKeyError, setWebKeyError] = useState<string | undefined>(undefined)
   /** The interface card is secondary; keep the settings page's core controls first. */
   const [enhancementsOpen, setEnhancementsOpen] = useState(false)
+  /** 网页搜索相关设置与 DSH 绑定状态。 */
+  const [searchMode, setSearchMode] = useState<MagpieSearchMode>('mcp')
+  const [searchModel, setSearchModel] = useState('')
+  const [searchCustomModel, setSearchCustomModel] = useState(false)
+  const [searchActive, setSearchActive] = useState(false)
+  const [searchRegistered, setSearchRegistered] = useState(false)
+  const [searchSwitchable, setSearchSwitchable] = useState(false)
+  const [activeSearchProvider, setActiveSearchProvider] = useState<string | undefined>(undefined)
+  const [searchBusy, setSearchBusy] = useState<'idle' | 'saving' | 'testing'>('idle')
+  const [searchNotice, setSearchNotice] = useState<string | undefined>(undefined)
+  const [searchError, setSearchError] = useState<string | undefined>(undefined)
   /**
    * Set the moment the user touches either credential field. The first read
    * and any in-flight warm-up then leave those fields alone, so a slow load
    * cannot overwrite characters typed while it was still on the wire.
    */
   const credentialsDirty = useRef(false)
+  /** 用户开始编辑搜索设置后，阻止慢加载回写覆盖表单。 */
+  const searchDirty = useRef(false)
 
   /**
    * The model list autosaves: remove and adopt are discrete, deliberate acts,
@@ -224,6 +261,17 @@ export function MagpieSettings(): unknown {
       setHasWebKey(settings.hasWebKey === true)
       setEnabled(settings.enabledModels)
       setShowComposerIcon(settings.showComposerIcon !== false)
+      if (!searchDirty.current) {
+        const mode = settings.searchMode === 'model' ? 'model' : 'mcp'
+        const model = settings.searchModel ?? ''
+        setSearchMode(mode)
+        setSearchModel(model)
+        setSearchCustomModel(false)
+      }
+      setSearchActive(settings.searchActive === true)
+      setSearchRegistered(settings.searchRegistered === true)
+      setSearchSwitchable(settings.searchSwitchable === true)
+      setActiveSearchProvider(settings.activeSearchProvider)
       setModels(listed)
       setLoaded(true)
       // The Host answers before its catalog has warmed up, and the first
@@ -316,6 +364,85 @@ export function MagpieSettings(): unknown {
     )
   }
 
+  /** 将服务端返回的最新搜索绑定状态同步到本地 state。 */
+  const syncSearchState = (saved: MagpieSettingsView): void => {
+    const mode = saved.searchMode === 'model' ? 'model' : 'mcp'
+    const model = saved.searchModel ?? ''
+    setSearchMode(mode)
+    setSearchModel(model)
+    setSearchActive(saved.searchActive === true)
+    setSearchRegistered(saved.searchRegistered === true)
+    setSearchSwitchable(saved.searchSwitchable === true)
+    setActiveSearchProvider(saved.activeSearchProvider)
+  }
+
+  /** 切换 DSH 的 `web.searchProvider` 开关；开启时顺带提交当前选中的模式与模型。 */
+  const toggleSearchActive = (nextActive: boolean): void => {
+    setSearchBusy('saving')
+    setSearchError(undefined)
+    setSearchNotice(undefined)
+    const payload = nextActive
+      ? { searchMode, searchModel: searchModel.trim(), searchActive: true }
+      : { searchActive: false }
+    saveSearchSettings(payload).then(
+      (saved) => {
+        searchDirty.current = false
+        syncSearchState(saved)
+        setSearchNotice(text(nextActive ? 'webSearchSwitchedOn' : 'webSearchSwitchedOff'))
+      },
+      (cause: unknown) => {
+        setSearchError(text('webSearchFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+      },
+    ).finally(() => {
+      setSearchBusy('idle')
+    })
+  }
+
+  /** 单独保存网页搜索模式与模型。 */
+  const commitSearchSettings = (): void => {
+    setSearchBusy('saving')
+    setSearchError(undefined)
+    setSearchNotice(undefined)
+    saveSearchSettings({ searchMode, searchModel: searchModel.trim() }).then(
+      (saved) => {
+        searchDirty.current = false
+        syncSearchState(saved)
+        setSearchNotice(text('webSearchSaved'))
+      },
+      (cause: unknown) => {
+        setSearchError(text('webSearchFailed', { message: cause instanceof Error ? cause.message : String(cause) }))
+      },
+    ).finally(() => {
+      setSearchBusy('idle')
+    })
+  }
+
+  /** 使用当前表单（或已保存）凭据与搜索配置执行一次测试搜索。 */
+  const testSearch = (): void => {
+    setSearchBusy('testing')
+    setSearchError(undefined)
+    setSearchNotice(undefined)
+    void (async () => {
+      try {
+        const result = (await request('/api/magpie-search-test', 'POST', {
+          baseUrl,
+          ...(apiKey.trim() === '' ? {} : { apiKey }),
+          searchMode,
+          searchModel: searchModel.trim(),
+        })) as { count: number; hasContent?: boolean }
+        setSearchNotice(
+          result.count === 0 && result.hasContent === true
+            ? text('webSearchTestOkContent')
+            : text('webSearchTestOk', { count: result.count }),
+        )
+      } catch (cause: unknown) {
+        setSearchError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSearchBusy('idle')
+      }
+    })()
+  }
+
   const save = async (): Promise<void> => {
     setBusy('saving')
     setError(undefined)
@@ -329,6 +456,10 @@ export function MagpieSettings(): unknown {
       setBaseUrl(saved.baseUrl)
       setHasApiKey(saved.hasApiKey)
       setHasWebKey(saved.hasWebKey)
+      setSearchActive(saved.searchActive === true)
+      setSearchRegistered(saved.searchRegistered === true)
+      setSearchSwitchable(saved.searchSwitchable === true)
+      setActiveSearchProvider(saved.activeSearchProvider)
       // Never keep typed secrets in component state after they are stored.
       setApiKey('')
       // Adopt what the server stored, without queueing a write of its own —
@@ -362,6 +493,25 @@ export function MagpieSettings(): unknown {
 
   const working = busy !== 'idle'
   const incomplete = baseUrl.trim() === '' || (!hasApiKey && apiKey.trim() === '')
+  const searchWorking = searchBusy !== 'idle'
+  const searchNeedsModel = searchMode === 'model' && searchModel.trim() === ''
+  const searchReadyToEnable = hasApiKey && baseUrl.trim() !== '' && !searchNeedsModel
+  const knownSearchModel = searchModel !== '' && models.some((row) => row.id === searchModel)
+  const showCustomModelInput = searchCustomModel || (searchModel !== '' && !knownSearchModel)
+  const modelSelectValue = showCustomModelInput ? CUSTOM_SEARCH_MODEL : searchModel
+  const searchToggleHint = !searchRegistered
+    ? text('webSearchUnavailable')
+    : !searchSwitchable
+      ? text('webSearchManualSwitchHint')
+      : searchActive
+        ? text('webSearchActiveHint')
+        : !hasApiKey || baseUrl.trim() === ''
+          ? text('webSearchNeedsCredentials')
+          : searchNeedsModel
+            ? text('webSearchNeedsModel')
+            : activeSearchProvider !== undefined
+              ? text('webSearchOtherProviderHint', { provider: activeSearchProvider })
+              : text('webSearchInactiveHint')
 
   return (
     <section style={css.section}>
@@ -415,6 +565,111 @@ export function MagpieSettings(): unknown {
         )}
         {notice === undefined ? null : <p style={css.ok}>{notice}</p>}
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
+      </div>
+
+      <div style={css.card}>
+        <h3 style={css.cardTitle}>{text('webSearch')}</h3>
+        <p style={css.hint}>{text('webSearchIntro')}</p>
+        <label style={css.switchRow}>
+          <input
+            type="checkbox"
+            style={css.switchBox}
+            checked={searchActive}
+            disabled={!loaded || working || searchWorking || !searchRegistered || !searchSwitchable || (!searchActive && !searchReadyToEnable)}
+            onChange={(event: { currentTarget: { checked: boolean } }) => toggleSearchActive(event.currentTarget.checked)}
+          />
+          <span style={css.switchText}>
+            <span style={css.switchLabel}>{text('webSearchToggle')}</span>
+            <span style={css.switchHint}>{searchToggleHint}</span>
+          </span>
+        </label>
+        <div style={css.field}>
+          <span style={css.label}>{text('webSearchMode')}</span>
+          <select
+            style={css.select}
+            value={searchMode}
+            disabled={!loaded || working || searchWorking}
+            onChange={(event: { currentTarget: { value: string } }) => {
+              searchDirty.current = true
+              setSearchError(undefined)
+              setSearchNotice(undefined)
+              setSearchMode(event.currentTarget.value === 'model' ? 'model' : 'mcp')
+            }}
+          >
+            <option value="mcp">{text('webSearchModeMcp')}</option>
+            <option value="model">{text('webSearchModeModel')}</option>
+          </select>
+          <p style={css.hint}>
+            {searchMode === 'mcp'
+              ? text('webSearchModeMcpHint')
+              : text('webSearchModeModelHint', { baseUrl: baseUrl.trim().replace(/\/+$/, '') || 'http://127.0.0.1:3425/v1' })}
+          </p>
+        </div>
+        {searchMode === 'model' ? (
+          <div style={css.field}>
+            <span style={css.label}>{text('webSearchModel')}</span>
+            <select
+              style={css.select}
+              value={modelSelectValue}
+              disabled={!loaded || working || searchWorking}
+              onChange={(event: { currentTarget: { value: string } }) => {
+                const picked = event.currentTarget.value
+                searchDirty.current = true
+                setSearchError(undefined)
+                setSearchNotice(undefined)
+                if (picked === CUSTOM_SEARCH_MODEL) {
+                  setSearchCustomModel(true)
+                  return
+                }
+                setSearchCustomModel(false)
+                setSearchModel(picked)
+              }}
+            >
+              <option value="">{text('webSearchModelPlaceholder')}</option>
+              {models.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.displayName}
+                </option>
+              ))}
+              <option value={CUSTOM_SEARCH_MODEL}>{text('webSearchModelCustomOption')}</option>
+            </select>
+            {showCustomModelInput ? (
+              <Input
+                value={searchModel}
+                placeholder={text('webSearchModelCustomPlaceholder')}
+                disabled={!loaded || working || searchWorking}
+                onChange={(event: { currentTarget: { value: string } }) => {
+                  searchDirty.current = true
+                  setSearchError(undefined)
+                  setSearchNotice(undefined)
+                  setSearchModel(event.currentTarget.value)
+                }}
+              />
+            ) : null}
+          </div>
+        ) : null}
+        <div style={css.row}>
+          <Button
+            variant="outline"
+            disabled={!loaded || working || searchWorking || searchNeedsModel}
+            onClick={() => commitSearchSettings()}
+          >
+            {searchBusy === 'saving' ? text('saving') : text('webSearchSave')}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!loaded || working || searchWorking || incomplete || searchNeedsModel}
+            onClick={() => testSearch()}
+          >
+            {searchBusy === 'testing' ? text('webSearchTesting') : text('webSearchTest')}
+          </Button>
+        </div>
+        {searchError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {searchError}
+          </p>
+        )}
+        {searchNotice === undefined ? null : <p style={css.ok}>{searchNotice}</p>}
       </div>
 
       <div style={{ ...css.card, gap: enhancementsOpen ? 14 : 0 }}>

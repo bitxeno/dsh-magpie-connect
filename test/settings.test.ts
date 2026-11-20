@@ -11,6 +11,7 @@ import {
   normalizeEnabledModels,
   normalizePageSettings,
   resolveEffectiveEndpoint,
+  resolveEffectiveSearchSettings,
 } from '../src/settings.ts'
 import { ModelCatalog } from '../src/adapter/catalog.ts'
 
@@ -64,6 +65,26 @@ test('normalizePageSettings accepts the Web Key and refuses non-strings', () => 
   assert.equal('webKey' in normalizePageSettings({}), false)
   assert.throws(() => normalizePageSettings({ webKey: '' }), /non-empty/)
   assert.throws(() => normalizePageSettings({ webKey: 7 }), /non-empty string/)
+})
+
+test('normalizePageSettings 校验并规范化网页搜索字段，resolveEffectiveSearchSettings 按字段覆盖', () => {
+  assert.deepEqual(
+    normalizePageSettings({ searchMode: 'model', searchModel: '  codex/gpt-5.4-mini  ', searchMaxUses: 8 }),
+    { searchMode: 'model', searchModel: 'codex/gpt-5.4-mini', searchMaxUses: 8 },
+  )
+  assert.deepEqual(normalizePageSettings({ searchMode: 'mcp', searchModel: '   ' }), { searchMode: 'mcp', searchModel: '' })
+  assert.throws(() => normalizePageSettings({ searchMode: 'invalid' }), /searchMode/)
+  assert.throws(() => normalizePageSettings({ searchModel: 123 }), /searchModel/)
+  assert.throws(() => normalizePageSettings({ searchMaxUses: 0 }), /searchMaxUses/)
+  assert.throws(() => normalizePageSettings({ searchMaxUses: 21 }), /searchMaxUses/)
+  assert.throws(() => normalizePageSettings({ searchMaxUses: 2.5 }), /searchMaxUses/)
+
+  const patch = { mode: 'mcp' as const, model: 'patch/model', maxUses: 5 }
+  assert.deepEqual(resolveEffectiveSearchSettings(patch, {}), patch)
+  assert.deepEqual(
+    resolveEffectiveSearchSettings(patch, { searchMode: 'model', searchModel: 'page/model' }),
+    { mode: 'model', model: 'page/model', maxUses: 5 },
+  )
 })
 
 test('resolveEffectiveEndpoint prefers the page per field', () => {

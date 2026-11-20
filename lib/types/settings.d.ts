@@ -12,6 +12,8 @@
  * yet"; an allowlist can, and it is why a model the gateway re-lists never
  * comes back on its own.
  */
+/** Magpie 网页搜索模式：`'mcp'` 走网关原生 MCP 搜索，`'model'` 通过 Messages API 指定模型搜索。 */
+export type MagpieSearchMode = 'mcp' | 'model';
 export interface MagpiePageSettings {
     baseUrl?: string;
     apiKey?: string;
@@ -28,6 +30,12 @@ export interface MagpiePageSettings {
      * it. The settings page's switch writes `true`/`false` explicitly.
      */
     showComposerIcon?: boolean;
+    /** 网页搜索模式（缺省回退到 patch 配置或默认 `'mcp'`）。 */
+    searchMode?: MagpieSearchMode;
+    /** `'model'` 搜索模式下选定的 Magpie 模型 ID。 */
+    searchModel?: string;
+    /** `'model'` 搜索模式下单次请求最大搜索次数（正整数）。 */
+    searchMaxUses?: number;
     /**
      * Set once the `hiddenModels` (blacklist) document has been converted to
      * `enabledModels`. Its presence stops the migration from running twice — a
@@ -39,6 +47,12 @@ export interface MagpiePageSettings {
 export interface EffectiveEndpoint {
     baseUrl: string;
     apiKey: string;
+}
+/** 网页搜索配置解析结果（页面保存值优先于 patch 配置）。 */
+export interface EffectiveSearchSettings {
+    mode: MagpieSearchMode;
+    model: string;
+    maxUses: number;
 }
 /**
  * What the settings page is allowed to see. The credential never travels to
@@ -54,6 +68,22 @@ export interface MagpieSettingsView {
     inheritedModels: boolean;
     /** Whether the composer's routing icon shows (absent reads as true). */
     showComposerIcon: boolean;
+    /** 当前生效的网页搜索模式。 */
+    searchMode: MagpieSearchMode;
+    /** 当前生效的搜索模型 ID（`model` 模式下使用）。 */
+    searchModel: string;
+    /** 当前生效的单次最大搜索次数。 */
+    searchMaxUses: number;
+    /** DSH 的 `web.searchProvider` 当前是否已切换为本插件。 */
+    searchActive: boolean;
+    /** 本插件注册到 DSH `ctx.web` 的 provider id。 */
+    searchProviderId: string;
+    /** 当前 DSH 环境是否加载了 `ctx.web` 并成功注册了搜索提供方。 */
+    searchRegistered: boolean;
+    /** 当前 DSH 环境是否支持通过设置页一键修改 `web.searchProvider`。 */
+    searchSwitchable: boolean;
+    /** DSH 当前生效的 `web.searchProvider`（未设置即自动选择时省略）。 */
+    activeSearchProvider?: string;
 }
 export declare const SETTINGS_FILE = "settings.json";
 export declare function defaultSettingsPath(dataDir: string): string;
@@ -69,6 +99,10 @@ export declare function defaultSettingsPath(dataDir: string): string;
 export declare function normalizeBaseUrl(raw: unknown): string;
 /** Normalize an enabled-model allowlist: strings only, deduped, order kept. */
 export declare function normalizeEnabledModels(raw: unknown): string[];
+/** 规范化网页搜索模式，仅接受 `'mcp'` 或 `'model'`。 */
+export declare function normalizeSearchMode(raw: unknown): MagpieSearchMode;
+/** 规范化单次搜索最大工具调用次数（正整数，限制在 1..20）。 */
+export declare function normalizeSearchMaxUses(raw: unknown): number;
 /** Validate + normalize a page payload (full or partial). Unknown keys are dropped. */
 export declare function normalizePageSettings(raw: unknown): MagpiePageSettings;
 /**
@@ -105,6 +139,8 @@ export declare function resolveEffectiveEndpoint(patch: {
     baseUrl: string;
     apiKey: string;
 }, page: MagpiePageSettings): EffectiveEndpoint;
+/** 按字段合并搜索配置：设置页保存值优先于 patch 配置与默认值。 */
+export declare function resolveEffectiveSearchSettings(patch: EffectiveSearchSettings, page: MagpiePageSettings): EffectiveSearchSettings;
 /** Fully configured only when both URL and key are present. Either missing gates everything. */
 export declare function isConfigured(endpoint: EffectiveEndpoint): boolean;
 /** In-memory settings with file persistence. Synchronous reads for the hot path. */

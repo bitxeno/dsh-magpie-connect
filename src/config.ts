@@ -12,6 +12,7 @@
  * from the picker. Page values win per-field; patch config is the fallback.
  */
 import { dshHomePath } from './homeDir.ts'
+import type { MagpieSearchMode } from './settings.ts'
 export interface DshMagpieConnectConfig {
   /**
    * Provider route id registered into DSH (the grouping key in the model
@@ -64,6 +65,14 @@ export interface DshMagpieConnectConfig {
    * Non-positive disables that phase.
    */
   idleTimeoutMs?: number
+  /** 网页搜索模式：`'mcp'` 使用 Magpie 网关原生 MCP 搜索，`'model'` 通过 `/messages` 调用指定模型搜索。 */
+  searchMode?: MagpieSearchMode
+  /** `'model'` 搜索模式下使用的 Magpie 模型 ID（留空时需在设置页选择）。 */
+  searchModel?: string
+  /** `'model'` 搜索模式下单次请求最多触发 `web_search` 工具的次数（正整数，默认 5）。 */
+  searchMaxUses?: number
+  /** 单次网页搜索请求超时（毫秒，默认 120000）。 */
+  searchTimeoutMs?: number
 }
 
 export const defaults = {
@@ -76,10 +85,17 @@ export const defaults = {
   timeoutMs: 300_000,
   firstEventTimeoutMs: 90_000,
   idleTimeoutMs: 60_000,
+  searchMode: 'mcp' as MagpieSearchMode,
+  searchModel: '',
+  searchMaxUses: 5,
+  searchTimeoutMs: 120_000,
 } as const
 
 export type ResolvedConfig = Required<
-  Pick<DshMagpieConnectConfig, 'providerId' | 'refreshSeconds'>
+  Pick<
+    DshMagpieConnectConfig,
+    'providerId' | 'refreshSeconds' | 'searchMode' | 'searchModel' | 'searchMaxUses' | 'searchTimeoutMs'
+  >
 > &
   DshMagpieConnectConfig & { displayName: string; baseUrl: string; apiKey: string; dataDir: string }
 
@@ -93,5 +109,15 @@ export function resolveConfig(config: DshMagpieConnectConfig = {}): ResolvedConf
     baseUrl: config.baseUrl ?? defaults.baseUrl,
     apiKey: config.apiKey ?? defaults.apiKey,
     dataDir: config.dataDir ?? dshHomePath('storages', 'magpie-connect'),
+    searchMode: config.searchMode === 'model' ? 'model' : defaults.searchMode,
+    searchModel: typeof config.searchModel === 'string' ? config.searchModel.trim() : defaults.searchModel,
+    searchMaxUses:
+      typeof config.searchMaxUses === 'number' && Number.isInteger(config.searchMaxUses) && config.searchMaxUses > 0
+        ? config.searchMaxUses
+        : defaults.searchMaxUses,
+    searchTimeoutMs:
+      typeof config.searchTimeoutMs === 'number' && Number.isFinite(config.searchTimeoutMs) && config.searchTimeoutMs > 0
+        ? Math.floor(config.searchTimeoutMs)
+        : defaults.searchTimeoutMs,
   }
 }
