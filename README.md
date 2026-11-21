@@ -13,7 +13,7 @@
 - **模型自动同步** — 网关列出的模型全部进入 DSH 模型选择器，想显示哪些由你决定。
 - **图片识别** — 网关声明支持图片的模型可以直接发图。
 - **思考档位** — 网关支持的思考档位（含 `none`、`ultra`）原样出现在选择器里。
-- **网页搜索切换** — 注册为 DSH 的独立搜索提供方（复用已保存的网关地址与 API Key），在设置页一键切换 DSH 的 `web_search` 到 Magpie；支持「Magpie 网关默认搜索（MCP）」与「指定 Magpie 模型（Messages API）」两种模式，随时在页面切换搜索模型，无需手改 `cordis.patch.yml`。
+- **网页搜索切换** — 注册为 DSH 的独立搜索提供方（复用已保存的网关地址与 API Key），在设置页一键切换 DSH 的 `web_search` 到 Magpie；默认沿用 Magpie 自身的代搜模型或 Search API 配置（无需在资源库开启 MCP 路由），也支持指定 Magpie 模型（Messages API）并随时在页面切换，无需手改 `cordis.patch.yml`。
 - **路由浮窗** — 输入框右侧的 Magpie 图标，桌面悬停（手机端点按）即显示网关路由的压缩视图：当前会话最近一次请求走了哪条路由、命中/避开了哪些账号/模型及耗时；无会话时回退显示整份 trace 里最新的一条路由。数据由插件在 Host 侧用已保存的 Key 读取（`/api/magpie-trace`，聚合网关的 `/v1/magpie/usage/requests`、`/v1/magpie/quotas`、`/v1/magpie/concurrency` 与 Web 的 `/api/gateway/trace`），浏览器不接触 Key；账号持有人只以首字符形式出现在页面上。
 - **完整路由组详情（可选）** — 在设置页填入 Magpie Web Key 后，浮窗会从 Magpie Web 的完整 trace 读取当前会话的路由组、嵌套子路由组（如 `Hy4 auto/hy4free`、`GPT-6 Luna auto/gpt-6-luna`）、候选账号、逐次尝试、限流/失效原因与恢复时间，并通过 Host 同源代理显示供应商图标；Web Key 仅保存在 Host 的 `settings.json`（文件权限 `0600`），设置页不回显。未配置或 Web Key 失效时自动回退到简化视图。
 
@@ -94,7 +94,7 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
 
 - 勾选 **将 DSH 网页搜索切换到 Magpie** — 实时更新 DSH 的 `web.searchProvider`，无需手动编辑 `cordis.patch.yml`（取消勾选即可恢复 DSH 自动选择；与 DSH 内置「插件 → 内置插件配置 → 网页搜索与获取」双向同步）。
 - 选择 **搜索方式**：
-  - **Magpie 网关默认搜索（MCP）**（默认）— 请求 `{gatewayBase}/mcp/magpie/web-search`，直接使用 Magpie 自身「设置 → 模型 → 联网搜索」里配置的搜索 API 或代搜模型，无需额外指定模型。
+  - **跟随 Magpie 网关搜索设置（默认）** — 通过网关内置 `{gatewayBase}/mcp/magpie/web-search` 直接沿用 Magpie 自身的代搜模型或 Search API 配置，无需在 Magpie 资源库开启 MCP 路由，也无需额外指定模型。
   - **指定 Magpie 模型（Messages API）** — 请求 `{baseUrl}/messages` 并附带 `web_search_20250305` 工具，可直接从网关模型列表中随时切换搜索模型，或手动填写自定义模型 ID。
 - 点击 **测试搜索** — 立即验证当前搜索方式与模型是否可用。
 
@@ -187,7 +187,7 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
 | `timeoutMs` | `300000` | 单次请求的总超时（毫秒）。 |
 | `firstEventTimeoutMs` | `90000` | 等待首个上游事件的超时（毫秒）。 |
 | `idleTimeoutMs` | `60000` | 上游事件之间的静默超时（毫秒）。 |
-| `searchMode` | `'mcp'` | 网页搜索方式：`'mcp'` 使用 Magpie 原生 MCP 搜索，`'model'` 通过 `/messages` 调用指定模型搜索。 |
+| `searchMode` | `'mcp'` | 网页搜索方式：`'mcp'` 沿用 Magpie 自身的代搜模型或 Search API（内置 `/mcp/magpie/web-search`，无需开启资源库 MCP 路由），`'model'` 通过 `/messages` 调用指定模型搜索。 |
 | `searchModel` | `''` | `'model'` 搜索模式下使用的 Magpie 模型 ID。 |
 | `searchMaxUses` | `5` | `'model'` 搜索模式下单次请求最大 `web_search` 使用次数（1–20）。 |
 | `searchTimeoutMs` | `120000` | 单次网页搜索请求的总超时（毫秒）。 |

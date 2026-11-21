@@ -639,8 +639,8 @@ export class MagpieSearchProvider implements WebSearchProvider {
   readonly id: string
   readonly title: string
   readonly description = {
-    en: 'Search the web through the Magpie gateway (gateway MCP search or a selected Magpie model). Configure on the Magpie settings page.',
-    zh: '通过 Magpie 网关执行网页搜索（支持网关默认 MCP 搜索或指定 Magpie 模型）。在「Magpie 网关」设置页中配置。',
+    en: 'Search the web through the Magpie gateway (follows Magpie’s own search settings by default, or a selected Magpie model). Configure on the Magpie settings page.',
+    zh: '通过 Magpie 网关执行网页搜索（默认沿用 Magpie 自身的代搜模型或 Search API 配置，也可指定 Magpie 模型）。在「Magpie 网关」设置页中配置。',
   } as const
 
   readonly #resolveSnapshot: () => SearchRuntimeSnapshot
