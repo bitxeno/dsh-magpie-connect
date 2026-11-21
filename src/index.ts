@@ -14,12 +14,21 @@ import type { AttachmentStore } from './adapter/messages.ts'
 import { resolveConfig, type DshMagpieConnectConfig } from './config.ts'
 import { deriveGatewayBase, fetchTraceView, fetchWebIcon, TRACE_TIMEOUT_MS } from './trace.ts'
 import {
+  MagpieSearchProvider,
+  type SearchRuntimeSnapshot,
+  type WebSearchProvider,
+} from './search.ts'
+import {
   SettingsStore,
   defaultSettingsPath,
   isConfigured,
   normalizeBaseUrl,
   normalizePageSettings,
+  normalizeSearchMaxUses,
+  normalizeSearchMode,
   resolveEffectiveEndpoint,
+  resolveEffectiveSearchSettings,
+  type EffectiveSearchSettings,
   type MagpieSettingsView,
 } from './settings.ts'
 
@@ -78,6 +87,8 @@ export const DISCOVER_API = '/api/magpie-discover'
 export const TRACE_API = '/api/magpie-trace'
 /** Same-origin proxy for Magpie Web provider icons; the Web Key stays on the Host. */
 export const ICON_API = '/api/magpie-icon'
+/** 设置页网页搜索测试路由（在 Host 侧使用当前表单或已保存凭据执行一次试探搜索）。 */
+export const SEARCH_TEST_API = '/api/magpie-search-test'
 
 /**
  * How long a settings save waits for the catalog re-read it triggered.
@@ -88,13 +99,31 @@ export const ICON_API = '/api/magpie-icon'
  */
 const SAVE_REFRESH_WAIT_MS = 5000
 
+/** 设置页「测试搜索」按钮的上限超时（需低于浏览器 30s 请求上限，确保返回明确错误）。 */
+const SEARCH_TEST_TIMEOUT_MS = 25_000
+
+/** DSH `web` 服务与本插件搜索提供方的绑定状态。 */
+export interface WebSearchBindingState {
+  registered: boolean
+  switchable: boolean
+  active: boolean
+  activeProvider?: string
+}
+
 /** Backend generation behind the shared settings routes (newest wins). */
 export interface SettingsBackend {
   store: SettingsStore
   catalog: ModelCatalog
   patchEndpoint: { baseUrl: string; apiKey: string }
+  patchSearch: EffectiveSearchSettings
+  searchTimeoutMs: number
+  providerId: string
   effective: () => { baseUrl: string; apiKey: string }
+  effectiveSearch: () => EffectiveSearchSettings
   applyPageSettings: () => void
+  readWebSearchState: () => WebSearchBindingState
+  setWebSearchActive: (active: boolean) => Promise<void>
+  restoreWebSearchProvider: (provider: string | undefined) => Promise<void>
 }
 
 type FetchRegister = (route: {
@@ -164,11 +193,29 @@ let currentBackend: SettingsBackend | null = null
 let liveRouteSets = 0
 let routeDisposers: Array<() => void | Promise<void>> | null = null
 
+/** 重叠热重载期间等待接管 `ctx.web` 注册权的同 id 后续代条目。 */
+interface PendingSearchWaiter {
+  tryTakeover: () => boolean
+  onLost: () => void
+}
+
+/** 当前由本插件活跃实例占用的 `ctx.web` 搜索提供方 id，用于区分同插件旧代与外部插件冲突。 */
+const ownedSearchProviders = new Set<string>()
+const pendingSearchRegistrations = new Map<string, PendingSearchWaiter[]>()
+
+/** @internal 测试辅助钩子：重置搜索提供方占位记录与等待接管队列。 */
+export function __resetSearchProviders(): void {
+  ownedSearchProviders.clear()
+  pendingSearchRegistrations.clear()
+}
+
 /** @internal Test hook: forget installed routes so the next apply reinstalls. */
 export function __resetSettingsRoutes(): void {
   currentBackend = null
   liveRouteSets = 0
   routeDisposers = null
+  ownedSearchProviders.clear()
+  pendingSearchRegistrations.clear()
 }
 
 function jsonResponse(status: number, payload: unknown): Response {
@@ -239,6 +286,8 @@ interface RouteDefinition {
 function settingsView(backend: SettingsBackend): MagpieSettingsView {
   const page = backend.store.get()
   const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
+  const search = resolveEffectiveSearchSettings(backend.patchSearch, page)
+  const binding = backend.readWebSearchState()
   return {
     baseUrl: endpoint.baseUrl,
     hasApiKey: endpoint.apiKey !== '',
@@ -246,6 +295,14 @@ function settingsView(backend: SettingsBackend): MagpieSettingsView {
     enabledModels: page.enabledModels,
     inheritedModels: page.enabledModels === undefined,
     showComposerIcon: page.showComposerIcon !== false,
+    searchMode: search.mode,
+    searchModel: search.model,
+    searchMaxUses: search.maxUses,
+    searchActive: binding.active,
+    searchProviderId: backend.providerId,
+    searchRegistered: binding.registered,
+    searchSwitchable: binding.switchable,
+    ...(binding.activeProvider !== undefined ? { activeSearchProvider: binding.activeProvider } : {}),
   }
 }
 
@@ -283,14 +340,71 @@ async function handleSettingsPost(request: Request): Promise<Response> {
   try {
     const backend = backendOrThrow()
     const body = await readRouteBody(request)
+    let searchActive: boolean | undefined
+    if (body && typeof body === 'object' && 'searchActive' in body) {
+      const rawActive = (body as Record<string, unknown>).searchActive
+      if (rawActive !== undefined) {
+        if (typeof rawActive !== 'boolean') {
+          throw new Error('dsh-magpie-connect: searchActive must be a boolean')
+        }
+        searchActive = rawActive
+      }
+    }
     const normalized = normalizePageSettings(stripBlankApiKey(backend, body))
+    // 预览本次提交生效后的配置，在落盘前统一拦截不完整的搜索切换请求。
+    const mergedPage = { ...backend.store.get(), ...normalized }
+    const nextEndpoint = resolveEffectiveEndpoint(backend.patchEndpoint, mergedPage)
+    const nextSearch = resolveEffectiveSearchSettings(backend.patchSearch, mergedPage)
+    const currentBinding = backend.readWebSearchState()
+    const willBeActive = searchActive ?? currentBinding.active
+    if (searchActive === true) {
+      if (!currentBinding.registered) {
+        throw new Error('dsh-magpie-connect: DSH web search service is unavailable in this composition')
+      }
+      if (!currentBinding.switchable) {
+        throw new Error('dsh-magpie-connect: cannot update DSH web.searchProvider automatically; select Magpie in DSH Web search settings')
+      }
+      if (!isConfigured(nextEndpoint)) {
+        throw new Error('dsh-magpie-connect: configure API URL and apiKey before enabling Magpie web search')
+      }
+    }
+    if (
+      willBeActive &&
+      (searchActive === true || normalized.searchMode !== undefined || normalized.searchModel !== undefined) &&
+      nextSearch.mode === 'model' &&
+      nextSearch.model.trim() === ''
+    ) {
+      throw new Error('dsh-magpie-connect: searchModel is required when searchMode is "model"')
+    }
     // The submitted allowlist is stored **as submitted**. Dropping ids the
     // current directory does not list would silently undo a delete: a lane's
     // models come and go between refreshes, so the ids removed while the
     // gateway happened to be un-listing them would be forgotten, then reappear
     // in the picker on the next refresh that listed them again.
-    await backend.store.save(normalized)
-    backend.applyPageSettings()
+    // 同时提交页面配置与 `searchActive` 时，先执行容易失败的 `ctx.settings.mutate`，
+    // 避免 mutate 失败后留下半截写入的 settings.json；若后续 store.save 失败则回滚。
+    const hasPageFields = Object.keys(normalized).length > 0
+    if (searchActive !== undefined) {
+      const previousProvider = currentBinding.activeProvider
+      const willMutateProvider =
+        (searchActive && previousProvider !== backend.providerId) ||
+        (!searchActive && previousProvider === backend.providerId)
+      await backend.setWebSearchActive(searchActive)
+      if (hasPageFields) {
+        try {
+          await backend.store.save(normalized)
+          backend.applyPageSettings()
+        } catch (saveError) {
+          if (willMutateProvider) {
+            await backend.restoreWebSearchProvider(previousProvider).catch(() => {})
+          }
+          throw saveError
+        }
+      }
+    } else {
+      await backend.store.save(normalized)
+      backend.applyPageSettings()
+    }
     // A save can move the endpoint (or just the key), so re-read the directory
     // before answering: the page re-reads rows right after this response, and a
     // key-guarded gateway would otherwise still be serving the old, empty
@@ -436,6 +550,58 @@ async function handleIconGet(request: Request): Promise<Response> {
   }
 }
 
+/**
+ * 测试网页搜索配置：使用当前表单（或已保存）的网关地址、Key 及搜索参数
+ * 发起一次试探搜索，便于用户在保存前验证 MCP 或指定模型搜索是否可用。
+ */
+async function handleSearchTestPost(request: Request): Promise<Response> {
+  try {
+    const backend = backendOrThrow()
+    const body = (await readRouteBody(request)) as {
+      baseUrl?: unknown
+      apiKey?: unknown
+      searchMode?: unknown
+      searchModel?: unknown
+      searchMaxUses?: unknown
+      query?: unknown
+    }
+    const { origin, key } = probeTarget(backend, body)
+    const current = backend.effectiveSearch()
+    const mode = body.searchMode !== undefined ? normalizeSearchMode(body.searchMode) : current.mode
+    let model = current.model
+    if (body.searchModel !== undefined) {
+      if (typeof body.searchModel !== 'string') {
+        throw new Error('dsh-magpie-connect: searchModel must be a string')
+      }
+      model = body.searchModel.trim()
+    }
+    const maxUses = body.searchMaxUses !== undefined ? normalizeSearchMaxUses(body.searchMaxUses) : current.maxUses
+    const query = typeof body.query === 'string' && body.query.trim() !== '' ? body.query.trim() : 'DeepSeek'
+    const provider = new MagpieSearchProvider({
+      id: backend.providerId,
+      resolveSnapshot: () => ({
+        endpoint: { baseUrl: origin, apiKey: key },
+        search: {
+          mode,
+          model,
+          maxUses,
+          timeoutMs: Math.min(backend.searchTimeoutMs, SEARCH_TEST_TIMEOUT_MS),
+        },
+      }),
+    })
+    const result = await provider.search({ query, maxResults: 5 })
+    return routeOk({
+      mode,
+      ...(mode === 'model' ? { model } : {}),
+      count: result.sources.length,
+      hasContent: typeof result.content === 'string' && result.content.length > 0,
+      sources: result.sources.slice(0, 5),
+    })
+  } catch (error) {
+    return routeFail(error)
+  }
+}
+
 function routeDefinitions(): RouteDefinition[] {
   return [
     {
@@ -473,6 +639,12 @@ function routeDefinitions(): RouteDefinition[] {
       methods: ['GET'],
       requestBody: 'buffered',
       fetch: (request: Request) => handleIconGet(request),
+    },
+    {
+      path: SEARCH_TEST_API,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request: Request) => handleSearchTestPost(request),
     },
   ]
 }
@@ -554,6 +726,193 @@ function installSettingsRoutes(
   }
 }
 
+interface DshSettingsDescriptor {
+  ns?: string
+  value?: unknown
+  revision?: number
+}
+
+interface DshSettingsService {
+  readonly writable?: boolean
+  configure?: (policy: unknown, fiber: unknown) => unknown
+  describe?: (options?: unknown) => DshSettingsDescriptor[]
+  mutate?: (
+    ns: string,
+    ops: ReadonlyArray<
+      { op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }
+    >,
+    expectedRevision?: number,
+  ) => Promise<void>
+}
+
+/** 按 LIFO（最新一代优先）尝试让等待队列中的后续代接管 `ctx.web` 注册权。 */
+function drainSearchWaiters(id: string, finalAttempt: boolean): boolean {
+  if (ownedSearchProviders.has(id)) return true
+  const waiters = pendingSearchRegistrations.get(id)
+  if (!waiters || waiters.length === 0) return false
+  for (let i = waiters.length - 1; i >= 0; i--) {
+    const candidate = waiters[i]!
+    try {
+      if (candidate.tryTakeover()) {
+        waiters.splice(i, 1)
+        if (waiters.length === 0) pendingSearchRegistrations.delete(id)
+        return true
+      }
+    } catch {
+      candidate.onLost()
+      waiters.splice(i, 1)
+    }
+  }
+  if (finalAttempt && !ownedSearchProviders.has(id)) {
+    // 微任务复试后仍无法接管（例如宿主已卸载或外部插件抢占），同步纠正剩余等待者的注册状态。
+    const remaining = waiters.splice(0, waiters.length)
+    pendingSearchRegistrations.delete(id)
+    for (const waiter of remaining) waiter.onLost()
+  } else if (waiters.length === 0) {
+    pendingSearchRegistrations.delete(id)
+  }
+  return false
+}
+
+/**
+ * 向 DSH 的 `ctx.web` 注册 Magpie 网页搜索提供方（可选注入）。
+ *
+ * 兼容 Cordis 的 fiber 生命周期与热重载重叠场景：
+ * - 正常启动时直接向 `wctx.web.registerSearchProvider` 注册，并通过 `wctx.effect`
+ *   绑定清理；
+ * - 若遇到 `WEB_DUPLICATE_PROVIDER`：仅当确认是本插件活跃前一代占位
+ *   （`ownedSearchProviders.has(id)`）时才入队等待接管并上报已注册；若该 id
+ *   被外部无关插件占用，则保持未注册状态，避免设置页误允许切换；
+ * - 前一代卸载释放注册位后，先同步尝试由最新存活代接管，若 `dispose()` 为
+ *   异步微任务释放导致同步仍遇重复 id，则再通过 `queueMicrotask` 复试一次。
+ * - 未加载 `web` 服务的精简组合会安静跳过。
+ */
+function installSearchProvider(
+  ctx: PluginContext,
+  logger: PluginContext['logger'],
+  options: {
+    id: string
+    title: string
+    resolveSnapshot: () => SearchRuntimeSnapshot
+    onRegisteredChange: (registered: boolean) => void
+  },
+): void {
+  try {
+    if (typeof ctx.inject !== 'function') return
+    ctx.inject(['web'], (wctx: Record<string, unknown>) => {
+      const scoped = wctx as {
+        effect?: (fn: () => () => void, label?: string) => unknown
+        web?: { registerSearchProvider?: (provider: WebSearchProvider) => unknown }
+      }
+      const web = scoped.web
+      const register = web?.registerSearchProvider
+      if (typeof register !== 'function') {
+        logger.warn('dsh-magpie-connect: web search registry unavailable; Magpie search provider disabled')
+        return
+      }
+      const provider = new MagpieSearchProvider({
+        id: options.id,
+        title: options.title,
+        resolveSnapshot: options.resolveSnapshot,
+      })
+      let ownedDispose: (() => void) | null = null
+      let ownsRegistration = false
+      let cleanedUp = false
+
+      const tryRegister = (): boolean => {
+        if (cleanedUp) return false
+        try {
+          const disposer = register.call(web, provider)
+          ownedDispose = typeof disposer === 'function' ? (disposer as () => void) : null
+          ownsRegistration = true
+          ownedSearchProviders.add(options.id)
+          options.onRegisteredChange(true)
+          logger.info(`dsh-magpie-connect: web search provider registered for "${options.id}"`)
+          return true
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+          if (/already registered/i.test(message) || code === 'WEB_DUPLICATE_PROVIDER') {
+            return false
+          }
+          logger.warn(`dsh-magpie-connect: web search provider registration failed: ${message}`)
+          throw error
+        }
+      }
+
+      let registeredNow = false
+      try {
+        registeredNow = tryRegister()
+      } catch {
+        return
+      }
+
+      const waiter: PendingSearchWaiter = {
+        tryTakeover: tryRegister,
+        onLost: () => {
+          if (!cleanedUp && !ownsRegistration) options.onRegisteredChange(false)
+        },
+      }
+
+      if (!registeredNow) {
+        if (!ownedSearchProviders.has(options.id)) {
+          logger.warn(
+            `dsh-magpie-connect: web search provider "${options.id}" is already registered by another plugin; Magpie web search disabled`,
+          )
+          options.onRegisteredChange(false)
+          return
+        }
+        logger.warn(`dsh-magpie-connect: web search provider "${options.id}" already registered by an earlier generation; waiting to take over`)
+        const queue = pendingSearchRegistrations.get(options.id) ?? []
+        queue.push(waiter)
+        pendingSearchRegistrations.set(options.id, queue)
+        // 前一代正在活跃占位并通过 currentBackend 委托到最新一代，接管完成前保持可用。
+        options.onRegisteredChange(true)
+      }
+
+      const teardown = (): void => {
+        if (cleanedUp) return
+        cleanedUp = true
+        options.onRegisteredChange(false)
+        const queue = pendingSearchRegistrations.get(options.id)
+        if (queue) {
+          const idx = queue.indexOf(waiter)
+          if (idx >= 0) queue.splice(idx, 1)
+          if (queue.length === 0) pendingSearchRegistrations.delete(options.id)
+        }
+        if (!ownsRegistration) return
+        ownsRegistration = false
+        ownedSearchProviders.delete(options.id)
+        const dispose = ownedDispose
+        ownedDispose = null
+        if (dispose) {
+          try {
+            dispose()
+          } catch {
+            // 卸载阶段尽力清理，不阻断其它资源释放
+          }
+        }
+        // 先同步尝试接管；若宿主 dispose 为异步微任务释放，则再调度一次微任务复试。
+        if (!drainSearchWaiters(options.id, false)) {
+          const remaining = pendingSearchRegistrations.get(options.id)
+          if (remaining && remaining.length > 0) {
+            queueMicrotask(() => {
+              drainSearchWaiters(options.id, true)
+            })
+          }
+        }
+      }
+
+      if (typeof scoped.effect === 'function') {
+        scoped.effect(() => teardown, 'dsh-magpie-connect: web search provider')
+      }
+      return teardown
+    })
+  } catch (error) {
+    logger.warn(`dsh-magpie-connect: web search provider unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 export function apply(
   ctx: PluginContext,
   config: DshMagpieConnectConfig = {},
@@ -588,7 +947,72 @@ export function apply(
     privateDir: config.dataDir === undefined,
   })
   const patchEndpoint = { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey }
+  const patchSearch: EffectiveSearchSettings = {
+    mode: cfg.searchMode,
+    model: cfg.searchModel,
+    maxUses: cfg.searchMaxUses,
+  }
   const effective = () => resolveEffectiveEndpoint(patchEndpoint, store.get())
+  const effectiveSearch = () => resolveEffectiveSearchSettings(patchSearch, store.get())
+
+  let searchRegistered = false
+  let dshSettings: DshSettingsService | undefined
+
+  /** 读取 DSH `web.searchProvider` 当前绑定状态（单一事实来源，与内置搜索设置页实时同步）。 */
+  const readWebSearchState = (): WebSearchBindingState => {
+    if (!dshSettings || typeof dshSettings.describe !== 'function') {
+      return { registered: searchRegistered, switchable: false, active: false }
+    }
+    try {
+      const descriptors = dshSettings.describe()
+      const webDesc = Array.isArray(descriptors) ? descriptors.find((row) => row?.ns === 'web') : undefined
+      if (!webDesc) {
+        return { registered: searchRegistered, switchable: false, active: false }
+      }
+      const rawValue = webDesc.value && typeof webDesc.value === 'object'
+        ? (webDesc.value as Record<string, unknown>).searchProvider
+        : undefined
+      const activeProvider = typeof rawValue === 'string' && rawValue.trim() !== '' ? rawValue.trim() : undefined
+      const switchable = searchRegistered && dshSettings.writable !== false && typeof dshSettings.mutate === 'function'
+      return {
+        registered: searchRegistered,
+        switchable,
+        active: activeProvider === cfg.providerId,
+        ...(activeProvider !== undefined ? { activeProvider } : {}),
+      }
+    } catch {
+      return { registered: searchRegistered, switchable: false, active: false }
+    }
+  }
+
+  /** 通过 DSH `ctx.settings.mutate` 切换或解除 `web.searchProvider` 对本插件的绑定。 */
+  const setWebSearchActive = async (active: boolean): Promise<void> => {
+    const state = readWebSearchState()
+    if (!dshSettings || typeof dshSettings.mutate !== 'function' || dshSettings.writable === false) {
+      throw new Error('dsh-magpie-connect: DSH settings service is unavailable or read-only')
+    }
+    if (active) {
+      if (!state.registered) {
+        throw new Error('dsh-magpie-connect: Magpie web search provider is not registered')
+      }
+      await dshSettings.mutate('web', [{ op: 'set', path: ['searchProvider'], value: cfg.providerId }])
+      return
+    }
+    // 仅当当前确实指向本插件时才取消覆盖，避免误覆盖用户另行选中的其他搜索提供方。
+    if (state.activeProvider === cfg.providerId) {
+      await dshSettings.mutate('web', [{ op: 'unset', path: ['searchProvider'] }])
+    }
+  }
+
+  /** 将 `web.searchProvider` 回滚到切换前的值（用于伴随 settings.json 持久化失败时的补偿回滚）。 */
+  const restoreWebSearchProvider = async (provider: string | undefined): Promise<void> => {
+    if (!dshSettings || typeof dshSettings.mutate !== 'function' || dshSettings.writable === false) return
+    if (provider !== undefined) {
+      await dshSettings.mutate('web', [{ op: 'set', path: ['searchProvider'], value: provider }])
+      return
+    }
+    await dshSettings.mutate('web', [{ op: 'unset', path: ['searchProvider'] }])
+  }
 
   /**
    * Publish `llm/adapters-updated`, the one notification DSH's model
@@ -702,16 +1126,26 @@ export function apply(
   try {
     if (typeof ctx.inject === 'function') {
       ctx.inject(['settings'], (settingsCtx: Record<string, unknown>) => {
+        const scoped = settingsCtx as {
+          effect?: (fn: () => unknown, label?: string) => unknown
+          settings?: DshSettingsService
+        }
+        const owned = scoped.settings
+        dshSettings = owned
+        let released = false
+        const releaseSettings = (): void => {
+          if (released) return
+          released = true
+          if (dshSettings === owned) dshSettings = undefined
+        }
         try {
-          const scoped = settingsCtx as {
-            effect?: (fn: () => unknown, label?: string) => unknown
-            settings?: { configure?: (policy: unknown, fiber: unknown) => unknown }
-          }
           const fiber = (ctx as unknown as Record<string, unknown>).fiber
-          scoped.effect?.(() => scoped.settings?.configure?.({ auto: false }, fiber), 'dsh-magpie-connect: custom settings page')
+          scoped.effect?.(() => owned?.configure?.({ auto: false }, fiber), 'dsh-magpie-connect: custom settings page')
+          scoped.effect?.(() => releaseSettings, 'dsh-magpie-connect: web search settings ref')
         } catch {
           // presentation policy is best-effort
         }
+        return releaseSettings
       })
     }
   } catch {
@@ -721,9 +1155,53 @@ export function apply(
   // Newest generation wins: shared route handlers below always resolve through
   // here, so the settings page talks to the latest store/catalog/adapter even
   // when an older generation installed the routes.
-  currentBackend = { store, catalog, patchEndpoint, effective, applyPageSettings }
+  currentBackend = {
+    store,
+    catalog,
+    patchEndpoint,
+    patchSearch,
+    searchTimeoutMs: cfg.searchTimeoutMs,
+    providerId: cfg.providerId,
+    effective,
+    effectiveSearch,
+    applyPageSettings,
+    readWebSearchState,
+    setWebSearchActive,
+    restoreWebSearchProvider,
+  }
 
   installSettingsRoutes(ctx, logger)
+  installSearchProvider(ctx, logger, {
+    id: cfg.providerId,
+    title: cfg.displayName,
+    resolveSnapshot: () => {
+      if (currentBackend && currentBackend.providerId === cfg.providerId) {
+        const search = currentBackend.effectiveSearch()
+        return {
+          endpoint: currentBackend.effective(),
+          search: {
+            mode: search.mode,
+            model: search.model,
+            maxUses: search.maxUses,
+            timeoutMs: currentBackend.searchTimeoutMs,
+          },
+        }
+      }
+      const search = effectiveSearch()
+      return {
+        endpoint: effective(),
+        search: {
+          mode: search.mode,
+          model: search.model,
+          maxUses: search.maxUses,
+          timeoutMs: cfg.searchTimeoutMs,
+        },
+      }
+    },
+    onRegisteredChange: (registered) => {
+      searchRegistered = registered
+    },
+  })
 
   const maybeEffect = (ctx as { effect?: PluginContext['effect'] }).effect
   if (typeof maybeEffect === 'function') {
@@ -736,7 +1214,21 @@ export function apply(
 
 export { MagpieAdapter } from './adapter/magpie-adapter.ts'
 export { ModelCatalog } from './adapter/catalog.ts'
-export { SettingsStore, isConfigured, resolveEffectiveEndpoint } from './settings.ts'
+export {
+  MagpieSearchProvider,
+  MagpieSearchError,
+  mapAnthropicSearchResponse,
+  parseMagpieMcpSearchText,
+  searchViaMagpieMcp,
+  searchViaMagpieModel,
+} from './search.ts'
+export {
+  SettingsStore,
+  isConfigured,
+  resolveEffectiveEndpoint,
+  resolveEffectiveSearchSettings,
+  type MagpieSearchMode,
+} from './settings.ts'
 export {
   resolveConfig,
   type DshMagpieConnectConfig,

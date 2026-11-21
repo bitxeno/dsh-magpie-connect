@@ -1,3 +1,4 @@
+import type { MagpieSearchMode } from './settings.ts';
 export interface DshMagpieConnectConfig {
     /**
      * Provider route id registered into DSH (the grouping key in the model
@@ -50,6 +51,14 @@ export interface DshMagpieConnectConfig {
      * Non-positive disables that phase.
      */
     idleTimeoutMs?: number;
+    /** 网页搜索模式：`'mcp'` 使用 Magpie 网关原生 MCP 搜索，`'model'` 通过 `/messages` 调用指定模型搜索。 */
+    searchMode?: MagpieSearchMode;
+    /** `'model'` 搜索模式下使用的 Magpie 模型 ID（留空时需在设置页选择）。 */
+    searchModel?: string;
+    /** `'model'` 搜索模式下单次请求最多触发 `web_search` 工具的次数（正整数，默认 5）。 */
+    searchMaxUses?: number;
+    /** 单次网页搜索请求超时（毫秒，默认 120000）。 */
+    searchTimeoutMs?: number;
 }
 export declare const defaults: {
     readonly providerId: "dsh-magpie-connect";
@@ -61,8 +70,12 @@ export declare const defaults: {
     readonly timeoutMs: 300000;
     readonly firstEventTimeoutMs: 90000;
     readonly idleTimeoutMs: 60000;
+    readonly searchMode: MagpieSearchMode;
+    readonly searchModel: "";
+    readonly searchMaxUses: 5;
+    readonly searchTimeoutMs: 120000;
 };
-export type ResolvedConfig = Required<Pick<DshMagpieConnectConfig, 'providerId' | 'refreshSeconds'>> & DshMagpieConnectConfig & {
+export type ResolvedConfig = Required<Pick<DshMagpieConnectConfig, 'providerId' | 'refreshSeconds' | 'searchMode' | 'searchModel' | 'searchMaxUses' | 'searchTimeoutMs'>> & DshMagpieConnectConfig & {
     displayName: string;
     baseUrl: string;
     apiKey: string;

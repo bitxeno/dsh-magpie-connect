@@ -16,10 +16,25 @@ test('resolveConfig fills defaults and keeps overrides', () => {
   assert.equal(base.timeoutMs, 300_000)
   assert.equal(base.firstEventTimeoutMs, 90_000)
   assert.equal(base.idleTimeoutMs, 60_000)
-  const custom = resolveConfig({ providerId: 'x', refreshSeconds: 60 })
+  assert.equal(base.searchMode, 'mcp')
+  assert.equal(base.searchModel, '')
+  assert.equal(base.searchMaxUses, 5)
+  assert.equal(base.searchTimeoutMs, 120_000)
+  const custom = resolveConfig({
+    providerId: 'x',
+    refreshSeconds: 60,
+    searchMode: 'model',
+    searchModel: '  codex/gpt-5.4-mini  ',
+    searchMaxUses: 3,
+    searchTimeoutMs: 45_000,
+  })
   assert.equal(custom.providerId, 'x')
   assert.equal(custom.displayName, 'x')
   assert.equal(custom.refreshSeconds, 60)
+  assert.equal(custom.searchMode, 'model')
+  assert.equal(custom.searchModel, 'codex/gpt-5.4-mini')
+  assert.equal(custom.searchMaxUses, 3)
+  assert.equal(custom.searchTimeoutMs, 45_000)
 })
 
 test('timeout/retry/watchdog knobs are configurable', () => {

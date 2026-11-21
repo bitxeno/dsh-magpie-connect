@@ -17,6 +17,9 @@ import { dirname, join } from 'node:path'
  * comes back on its own.
  */
 
+/** Magpie 网页搜索模式：`'mcp'` 走网关原生 MCP 搜索，`'model'` 通过 Messages API 指定模型搜索。 */
+export type MagpieSearchMode = 'mcp' | 'model'
+
 export interface MagpiePageSettings {
   baseUrl?: string
   apiKey?: string
@@ -33,6 +36,12 @@ export interface MagpiePageSettings {
    * it. The settings page's switch writes `true`/`false` explicitly.
    */
   showComposerIcon?: boolean
+  /** 网页搜索模式（缺省回退到 patch 配置或默认 `'mcp'`）。 */
+  searchMode?: MagpieSearchMode
+  /** `'model'` 搜索模式下选定的 Magpie 模型 ID。 */
+  searchModel?: string
+  /** `'model'` 搜索模式下单次请求最大搜索次数（正整数）。 */
+  searchMaxUses?: number
   /**
    * Set once the `hiddenModels` (blacklist) document has been converted to
    * `enabledModels`. Its presence stops the migration from running twice — a
@@ -45,6 +54,13 @@ export interface MagpiePageSettings {
 export interface EffectiveEndpoint {
   baseUrl: string
   apiKey: string
+}
+
+/** 网页搜索配置解析结果（页面保存值优先于 patch 配置）。 */
+export interface EffectiveSearchSettings {
+  mode: MagpieSearchMode
+  model: string
+  maxUses: number
 }
 
 /**
@@ -61,6 +77,22 @@ export interface MagpieSettingsView {
   inheritedModels: boolean
   /** Whether the composer's routing icon shows (absent reads as true). */
   showComposerIcon: boolean
+  /** 当前生效的网页搜索模式。 */
+  searchMode: MagpieSearchMode
+  /** 当前生效的搜索模型 ID（`model` 模式下使用）。 */
+  searchModel: string
+  /** 当前生效的单次最大搜索次数。 */
+  searchMaxUses: number
+  /** DSH 的 `web.searchProvider` 当前是否已切换为本插件。 */
+  searchActive: boolean
+  /** 本插件注册到 DSH `ctx.web` 的 provider id。 */
+  searchProviderId: string
+  /** 当前 DSH 环境是否加载了 `ctx.web` 并成功注册了搜索提供方。 */
+  searchRegistered: boolean
+  /** 当前 DSH 环境是否支持通过设置页一键修改 `web.searchProvider`。 */
+  searchSwitchable: boolean
+  /** DSH 当前生效的 `web.searchProvider`（未设置即自动选择时省略）。 */
+  activeSearchProvider?: string
 }
 
 export const SETTINGS_FILE = 'settings.json'
@@ -108,6 +140,20 @@ export function normalizeEnabledModels(raw: unknown): string[] {
   return out
 }
 
+/** 规范化网页搜索模式，仅接受 `'mcp'` 或 `'model'`。 */
+export function normalizeSearchMode(raw: unknown): MagpieSearchMode {
+  if (raw === 'mcp' || raw === 'model') return raw
+  throw new Error('dsh-magpie-connect: searchMode must be "mcp" or "model"')
+}
+
+/** 规范化单次搜索最大工具调用次数（正整数，限制在 1..20）。 */
+export function normalizeSearchMaxUses(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > 20) {
+    throw new Error('dsh-magpie-connect: searchMaxUses must be an integer between 1 and 20')
+  }
+  return raw
+}
+
 /** Validate + normalize a page payload (full or partial). Unknown keys are dropped. */
 export function normalizePageSettings(raw: unknown): MagpiePageSettings {
   if (!raw || typeof raw !== 'object') throw new Error('dsh-magpie-connect: settings payload must be an object')
@@ -134,6 +180,14 @@ export function normalizePageSettings(raw: unknown): MagpiePageSettings {
     }
     out.showComposerIcon = record.showComposerIcon
   }
+  if (record.searchMode !== undefined) out.searchMode = normalizeSearchMode(record.searchMode)
+  if (record.searchModel !== undefined) {
+    if (typeof record.searchModel !== 'string') {
+      throw new Error('dsh-magpie-connect: searchModel must be a string')
+    }
+    out.searchModel = record.searchModel.trim()
+  }
+  if (record.searchMaxUses !== undefined) out.searchMaxUses = normalizeSearchMaxUses(record.searchMaxUses)
   if (record.migratedFromHiddenModels === true) out.migratedFromHiddenModels = true
   return out
 }
@@ -197,6 +251,18 @@ export function resolveEffectiveEndpoint(
   return {
     baseUrl: page.baseUrl ?? patch.baseUrl,
     apiKey: page.apiKey ?? patch.apiKey,
+  }
+}
+
+/** 按字段合并搜索配置：设置页保存值优先于 patch 配置与默认值。 */
+export function resolveEffectiveSearchSettings(
+  patch: EffectiveSearchSettings,
+  page: MagpiePageSettings,
+): EffectiveSearchSettings {
+  return {
+    mode: page.searchMode ?? patch.mode,
+    model: page.searchModel ?? patch.model,
+    maxUses: page.searchMaxUses ?? patch.maxUses,
   }
 }
 
