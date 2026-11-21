@@ -123,6 +123,7 @@ export interface SettingsBackend {
   applyPageSettings: () => void
   readWebSearchState: () => WebSearchBindingState
   setWebSearchActive: (active: boolean) => Promise<void>
+  restoreWebSearchProvider: (provider: string | undefined) => Promise<void>
 }
 
 type FetchRegister = (route: {
@@ -192,11 +193,19 @@ let currentBackend: SettingsBackend | null = null
 let liveRouteSets = 0
 let routeDisposers: Array<() => void | Promise<void>> | null = null
 
-/** 重叠热重载期间等待接管 `ctx.web` 注册权的同 id 后续代队列。 */
-const pendingSearchRegistrations = new Map<string, Array<() => boolean>>()
+/** 重叠热重载期间等待接管 `ctx.web` 注册权的同 id 后续代条目。 */
+interface PendingSearchWaiter {
+  tryTakeover: () => boolean
+  onLost: () => void
+}
 
-/** @internal 测试辅助钩子：重置等待中的搜索提供方接管队列。 */
+/** 当前由本插件活跃实例占用的 `ctx.web` 搜索提供方 id，用于区分同插件旧代与外部插件冲突。 */
+const ownedSearchProviders = new Set<string>()
+const pendingSearchRegistrations = new Map<string, PendingSearchWaiter[]>()
+
+/** @internal 测试辅助钩子：重置搜索提供方占位记录与等待接管队列。 */
 export function __resetSearchProviders(): void {
+  ownedSearchProviders.clear()
   pendingSearchRegistrations.clear()
 }
 
@@ -205,6 +214,7 @@ export function __resetSettingsRoutes(): void {
   currentBackend = null
   liveRouteSets = 0
   routeDisposers = null
+  ownedSearchProviders.clear()
   pendingSearchRegistrations.clear()
 }
 
@@ -371,13 +381,29 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     // models come and go between refreshes, so the ids removed while the
     // gateway happened to be un-listing them would be forgotten, then reappear
     // in the picker on the next refresh that listed them again.
-    // 仅切换 DSH 的 `web.searchProvider` 时无需空写 settings.json。
-    if (Object.keys(normalized).length > 0 || searchActive === undefined) {
+    // 同时提交页面配置与 `searchActive` 时，先执行容易失败的 `ctx.settings.mutate`，
+    // 避免 mutate 失败后留下半截写入的 settings.json；若后续 store.save 失败则回滚。
+    const hasPageFields = Object.keys(normalized).length > 0
+    if (searchActive !== undefined) {
+      const previousProvider = currentBinding.activeProvider
+      const willMutateProvider =
+        (searchActive && previousProvider !== backend.providerId) ||
+        (!searchActive && previousProvider === backend.providerId)
+      await backend.setWebSearchActive(searchActive)
+      if (hasPageFields) {
+        try {
+          await backend.store.save(normalized)
+          backend.applyPageSettings()
+        } catch (saveError) {
+          if (willMutateProvider) {
+            await backend.restoreWebSearchProvider(previousProvider).catch(() => {})
+          }
+          throw saveError
+        }
+      }
+    } else {
       await backend.store.save(normalized)
       backend.applyPageSettings()
-    }
-    if (searchActive !== undefined) {
-      await backend.setWebSearchActive(searchActive)
     }
     // A save can move the endpoint (or just the key), so re-read the directory
     // before answering: the page re-reads rows right after this response, and a
@@ -719,15 +745,46 @@ interface DshSettingsService {
   ) => Promise<void>
 }
 
+/** 按 LIFO（最新一代优先）尝试让等待队列中的后续代接管 `ctx.web` 注册权。 */
+function drainSearchWaiters(id: string, finalAttempt: boolean): boolean {
+  if (ownedSearchProviders.has(id)) return true
+  const waiters = pendingSearchRegistrations.get(id)
+  if (!waiters || waiters.length === 0) return false
+  for (let i = waiters.length - 1; i >= 0; i--) {
+    const candidate = waiters[i]!
+    try {
+      if (candidate.tryTakeover()) {
+        waiters.splice(i, 1)
+        if (waiters.length === 0) pendingSearchRegistrations.delete(id)
+        return true
+      }
+    } catch {
+      candidate.onLost()
+      waiters.splice(i, 1)
+    }
+  }
+  if (finalAttempt && !ownedSearchProviders.has(id)) {
+    // 微任务复试后仍无法接管（例如宿主已卸载或外部插件抢占），同步纠正剩余等待者的注册状态。
+    const remaining = waiters.splice(0, waiters.length)
+    pendingSearchRegistrations.delete(id)
+    for (const waiter of remaining) waiter.onLost()
+  } else if (waiters.length === 0) {
+    pendingSearchRegistrations.delete(id)
+  }
+  return false
+}
+
 /**
  * 向 DSH 的 `ctx.web` 注册 Magpie 网页搜索提供方（可选注入）。
  *
  * 兼容 Cordis 的 fiber 生命周期与热重载重叠场景：
  * - 正常启动时直接向 `wctx.web.registerSearchProvider` 注册，并通过 `wctx.effect`
  *   绑定清理；
- * - 若热重载期间前一代尚未卸载导致 `WEB_DUPLICATE_PROVIDER`，当前代先登记到
- *   接管队列（期间旧代已通过 `currentBackend` 委托到最新一代），待前一代卸载释放
- *   注册位后立刻在当前代的 `wctx` 上接管注册，避免旧代退出时误删搜索提供方。
+ * - 若遇到 `WEB_DUPLICATE_PROVIDER`：仅当确认是本插件活跃前一代占位
+ *   （`ownedSearchProviders.has(id)`）时才入队等待接管并上报已注册；若该 id
+ *   被外部无关插件占用，则保持未注册状态，避免设置页误允许切换；
+ * - 前一代卸载释放注册位后，先同步尝试由最新存活代接管，若 `dispose()` 为
+ *   异步微任务释放导致同步仍遇重复 id，则再通过 `queueMicrotask` 复试一次。
  * - 未加载 `web` 服务的精简组合会安静跳过。
  */
 function installSearchProvider(
@@ -759,6 +816,7 @@ function installSearchProvider(
         resolveSnapshot: options.resolveSnapshot,
       })
       let ownedDispose: (() => void) | null = null
+      let ownsRegistration = false
       let cleanedUp = false
 
       const tryRegister = (): boolean => {
@@ -766,6 +824,9 @@ function installSearchProvider(
         try {
           const disposer = register.call(web, provider)
           ownedDispose = typeof disposer === 'function' ? (disposer as () => void) : null
+          ownsRegistration = true
+          ownedSearchProviders.add(options.id)
+          options.onRegisteredChange(true)
           logger.info(`dsh-magpie-connect: web search provider registered for "${options.id}"`)
           return true
         } catch (error) {
@@ -786,13 +847,28 @@ function installSearchProvider(
         return
       }
 
-      if (!registeredNow) {
-        logger.warn(`dsh-magpie-connect: web search provider "${options.id}" already registered by another generation; waiting to take over`)
-        const queue = pendingSearchRegistrations.get(options.id) ?? []
-        queue.push(tryRegister)
-        pendingSearchRegistrations.set(options.id, queue)
+      const waiter: PendingSearchWaiter = {
+        tryTakeover: tryRegister,
+        onLost: () => {
+          if (!cleanedUp && !ownsRegistration) options.onRegisteredChange(false)
+        },
       }
-      options.onRegisteredChange(true)
+
+      if (!registeredNow) {
+        if (!ownedSearchProviders.has(options.id)) {
+          logger.warn(
+            `dsh-magpie-connect: web search provider "${options.id}" is already registered by another plugin; Magpie web search disabled`,
+          )
+          options.onRegisteredChange(false)
+          return
+        }
+        logger.warn(`dsh-magpie-connect: web search provider "${options.id}" already registered by an earlier generation; waiting to take over`)
+        const queue = pendingSearchRegistrations.get(options.id) ?? []
+        queue.push(waiter)
+        pendingSearchRegistrations.set(options.id, queue)
+        // 前一代正在活跃占位并通过 currentBackend 委托到最新一代，接管完成前保持可用。
+        options.onRegisteredChange(true)
+      }
 
       const teardown = (): void => {
         if (cleanedUp) return
@@ -800,10 +876,13 @@ function installSearchProvider(
         options.onRegisteredChange(false)
         const queue = pendingSearchRegistrations.get(options.id)
         if (queue) {
-          const idx = queue.indexOf(tryRegister)
+          const idx = queue.indexOf(waiter)
           if (idx >= 0) queue.splice(idx, 1)
           if (queue.length === 0) pendingSearchRegistrations.delete(options.id)
         }
+        if (!ownsRegistration) return
+        ownsRegistration = false
+        ownedSearchProviders.delete(options.id)
         const dispose = ownedDispose
         ownedDispose = null
         if (dispose) {
@@ -813,21 +892,14 @@ function installSearchProvider(
             // 卸载阶段尽力清理，不阻断其它资源释放
           }
         }
-        // 前一代释放后，由最新的存活后续代接管注册（LIFO 确保最新一代优先）
-        const waiters = pendingSearchRegistrations.get(options.id)
-        if (waiters && waiters.length > 0) {
-          for (let i = waiters.length - 1; i >= 0; i--) {
-            const candidate = waiters[i]!
-            try {
-              if (candidate()) {
-                waiters.splice(i, 1)
-                break
-              }
-            } catch {
-              waiters.splice(i, 1)
-            }
+        // 先同步尝试接管；若宿主 dispose 为异步微任务释放，则再调度一次微任务复试。
+        if (!drainSearchWaiters(options.id, false)) {
+          const remaining = pendingSearchRegistrations.get(options.id)
+          if (remaining && remaining.length > 0) {
+            queueMicrotask(() => {
+              drainSearchWaiters(options.id, true)
+            })
           }
-          if (waiters.length === 0) pendingSearchRegistrations.delete(options.id)
         }
       }
 
@@ -930,6 +1002,16 @@ export function apply(
     if (state.activeProvider === cfg.providerId) {
       await dshSettings.mutate('web', [{ op: 'unset', path: ['searchProvider'] }])
     }
+  }
+
+  /** 将 `web.searchProvider` 回滚到切换前的值（用于伴随 settings.json 持久化失败时的补偿回滚）。 */
+  const restoreWebSearchProvider = async (provider: string | undefined): Promise<void> => {
+    if (!dshSettings || typeof dshSettings.mutate !== 'function' || dshSettings.writable === false) return
+    if (provider !== undefined) {
+      await dshSettings.mutate('web', [{ op: 'set', path: ['searchProvider'], value: provider }])
+      return
+    }
+    await dshSettings.mutate('web', [{ op: 'unset', path: ['searchProvider'] }])
   }
 
   /**
@@ -1085,6 +1167,7 @@ export function apply(
     applyPageSettings,
     readWebSearchState,
     setWebSearchActive,
+    restoreWebSearchProvider,
   }
 
   installSettingsRoutes(ctx, logger)

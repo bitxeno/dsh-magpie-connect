@@ -56,6 +56,12 @@ interface StubContextOptions {
   withSettings?: boolean
   initialSearchProvider?: string
   writable?: boolean
+  /** 模拟 DSH WebRuntime 通过微任务异步释放搜索提供方的场景。 */
+  asyncWebDispose?: boolean
+  /** 预设已被外部插件占用的搜索提供方 id。 */
+  preRegisteredSearchProviders?: readonly WebSearchProvider[]
+  /** 注入 `settings.mutate` 失败钩子，验证原子性。 */
+  mutateError?: () => Error | undefined
 }
 
 function stubContext(options: StubContextOptions = {}): PluginContext & {
@@ -69,7 +75,9 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
   const routes: Route[] = []
   const adapters: Array<{ providers: string[] }> = []
   const emitted: string[] = []
-  const searchProviders = new Map<string, WebSearchProvider>()
+  const searchProviders = new Map<string, WebSearchProvider>(
+    (options.preRegisteredSearchProviders ?? []).map((provider) => [provider.id, provider]),
+  )
   const webConfig: { searchProvider?: string } = {
     ...(options.initialSearchProvider !== undefined ? { searchProvider: options.initialSearchProvider } : {}),
   }
@@ -129,7 +137,17 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
               }
               searchProviders.set(provider.id, provider)
               return () => {
-                searchProviders.delete(provider.id)
+                if (options.asyncWebDispose === true) {
+                  queueMicrotask(() => {
+                    if (searchProviders.get(provider.id) === provider) {
+                      searchProviders.delete(provider.id)
+                    }
+                  })
+                  return
+                }
+                if (searchProviders.get(provider.id) === provider) {
+                  searchProviders.delete(provider.id)
+                }
               }
             },
           },
@@ -153,6 +171,8 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
               ops: ReadonlyArray<{ op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }>,
             ) => {
               assert.equal(ns, 'web')
+              const injectedError = options.mutateError?.()
+              if (injectedError !== undefined) throw injectedError
               for (const op of ops) {
                 if (op.path.length === 1 && op.path[0] === 'searchProvider') {
                   if (op.op === 'set') webConfig.searchProvider = String(op.value)
@@ -988,4 +1008,132 @@ test('未配置 API Key 时拒绝开启 Magpie 搜索；多代热重载共享并
   // 第二代也卸载后干净注销
   for (const dispose of gen2Disposers) await dispose()
   assert.equal(ctx.searchProviders.size, 0)
+})
+
+test('外部插件占用同 id 时不误报 searchRegistered，且卸载不误删外部提供方', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const externalProvider: WebSearchProvider = {
+    id: 'dsh-magpie-connect',
+    title: 'External Search',
+    available: () => true,
+    search: async () => ({ sources: [], truncated: false }),
+  }
+  const ctx = stubContext({
+    withWeb: true,
+    withSettings: true,
+    preRegisteredSearchProviders: [externalProvider],
+  })
+  apply(ctx, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-ext-conflict-')) })
+  await settled()
+
+  const view = ((await callRoute(ctx.routes, SETTINGS_API, 'GET')).payload as { value: Record<string, unknown> }).value
+  assert.equal(view.searchRegistered, false)
+  assert.equal(view.searchSwitchable, false)
+
+  const attempt = await callRoute(ctx.routes, SETTINGS_API, 'POST', { searchActive: true })
+  assert.equal((attempt.payload as { ok: boolean }).ok, false)
+  assert.equal(ctx.webConfig.searchProvider, undefined)
+
+  // 卸载本插件不得删除外部插件注册的 provider
+  for (const dispose of ctx.disposers) await dispose()
+  assert.equal(ctx.searchProviders.get('dsh-magpie-connect'), externalProvider)
+})
+
+test('registerSearchProvider 的 disposer 异步微任务释放时，热重载后续代仍可正常接管', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+  __resetSettingsRoutes()
+  const ctx = stubContext({ withWeb: true, withSettings: true, asyncWebDispose: true })
+  const dir = mkdtempSync(join(tmpdir(), 'magpie-async-takeover-'))
+
+  apply(ctx, { baseUrl: origin, apiKey: 'key-1', refreshSeconds: 3600, dataDir: dir })
+  await settled()
+  const gen1Disposers = [...ctx.disposers]
+  const gen1Provider = ctx.searchProviders.get('dsh-magpie-connect')
+  assert.ok(gen1Provider)
+
+  // 第二代启动时旧代尚未卸载，进入等待队列
+  apply(ctx, { baseUrl: origin, apiKey: 'key-2', refreshSeconds: 3600, dataDir: dir })
+  await settled()
+  const gen2Disposers = ctx.disposers.slice(gen1Disposers.length)
+
+  // 第一代异步微任务释放后，第二代应在微任务中完成接管
+  for (const dispose of gen1Disposers) await dispose()
+  await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  const activeProvider = ctx.searchProviders.get('dsh-magpie-connect')
+  assert.ok(activeProvider)
+  assert.notEqual(activeProvider, gen1Provider, '注册权已切换到第二代实例')
+  const view = ((await callRoute(ctx.routes, SETTINGS_API, 'GET')).payload as { value: Record<string, unknown> }).value
+  assert.equal(view.searchRegistered, true)
+  assert.equal(view.searchSwitchable, true)
+
+  // 第二代卸载后同样干净释放
+  for (const dispose of gen2Disposers) await dispose()
+  await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  assert.equal(ctx.searchProviders.size, 0)
+})
+
+test('同时提交搜索配置与开关时保证原子性：mutate 失败不写 settings.json，store.save 失败回滚 web.searchProvider', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+
+  // 场景 A：ctx.settings.mutate 抛错时，settings.json 不应被提前写入
+  __resetSettingsRoutes()
+  let shouldFailMutate = true
+  const dirA = mkdtempSync(join(tmpdir(), 'magpie-atomic-mutate-'))
+  const ctxA = stubContext({
+    withWeb: true,
+    withSettings: true,
+    initialSearchProvider: 'deepseek-search-api',
+    mutateError: () => (shouldFailMutate ? new Error('SETTINGS_CONFLICT: web changed') : undefined),
+  })
+  apply(ctxA, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: dirA })
+  await settled()
+
+  const failedSwitch = await callRoute(ctxA.routes, SETTINGS_API, 'POST', {
+    searchMode: 'model',
+    searchModel: 'a',
+    searchActive: true,
+  })
+  assert.equal((failedSwitch.payload as { ok: boolean }).ok, false)
+  assert.equal(ctxA.webConfig.searchProvider, 'deepseek-search-api')
+  const afterFailView = ((await callRoute(ctxA.routes, SETTINGS_API, 'GET')).payload as { value: Record<string, unknown> }).value
+  assert.equal(afterFailView.searchMode, 'mcp')
+  assert.equal(afterFailView.searchModel, '')
+  assert.equal(afterFailView.searchActive, false)
+  const { existsSync, writeFileSync } = await import('node:fs')
+  assert.equal(existsSync(join(dirA, 'settings.json')), false, 'mutate 失败不得产生半截 settings.json')
+
+  // 恢复 mutate 后同一请求可正常提交
+  shouldFailMutate = false
+  const okSwitch = await callRoute(ctxA.routes, SETTINGS_API, 'POST', {
+    searchMode: 'model',
+    searchModel: 'a',
+    searchActive: true,
+  })
+  assert.equal((okSwitch.payload as { ok: boolean }).ok, true)
+  assert.equal(ctxA.webConfig.searchProvider, 'dsh-magpie-connect')
+
+  // 场景 B：settings.json 损坏导致 store.save 拒绝部分写入时，已切换的 web.searchProvider 应回滚回原值
+  __resetSettingsRoutes()
+  const dirB = mkdtempSync(join(tmpdir(), 'magpie-atomic-rollback-'))
+  writeFileSync(join(dirB, 'settings.json'), '{broken json')
+  const ctxB = stubContext({
+    withWeb: true,
+    withSettings: true,
+    initialSearchProvider: 'deepseek-search-api',
+  })
+  apply(ctxB, { baseUrl: origin, apiKey: 'patch-key', refreshSeconds: 3600, dataDir: dirB })
+  await settled()
+
+  const failedSave = await callRoute(ctxB.routes, SETTINGS_API, 'POST', {
+    searchMode: 'model',
+    searchModel: 'a',
+    searchActive: true,
+  })
+  assert.equal((failedSave.payload as { ok: boolean }).ok, false)
+  assert.match((failedSave.payload as { error: string }).error, /unreadable/)
+  assert.equal(ctxB.webConfig.searchProvider, 'deepseek-search-api', 'store.save 失败后 web.searchProvider 必须回滚到原值')
 })

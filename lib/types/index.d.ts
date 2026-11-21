@@ -85,6 +85,7 @@ export interface SettingsBackend {
     applyPageSettings: () => void;
     readWebSearchState: () => WebSearchBindingState;
     setWebSearchActive: (active: boolean) => Promise<void>;
+    restoreWebSearchProvider: (provider: string | undefined) => Promise<void>;
 }
 interface ModelRow {
     /** Route id, used by the allowlist, requests and session history. */
@@ -110,7 +111,7 @@ interface ModelRow {
 }
 /** One discovered candidate: a {@link ModelRow} without this plugin's own allowlist flag. */
 export type CandidateRow = Omit<ModelRow, 'enabled'>;
-/** @internal 测试辅助钩子：重置等待中的搜索提供方接管队列。 */
+/** @internal 测试辅助钩子：重置搜索提供方占位记录与等待接管队列。 */
 export declare function __resetSearchProviders(): void;
 /** @internal Test hook: forget installed routes so the next apply reinstalls. */
 export declare function __resetSettingsRoutes(): void;
