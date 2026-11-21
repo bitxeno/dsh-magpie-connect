@@ -70,7 +70,11 @@ const css: Record<string, Record<string, string | number>> = {
   switchLabel: { fontSize: 14, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)' },
   switchHint: { fontSize: 12, lineHeight: '17px', color: 'var(--dsw-alias-label-tertiary)' },
   collapseHead: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: 0, border: 0, background: 'transparent', cursor: 'pointer', textAlign: 'left' },
-  collapseChevron: { flex: 'none', marginLeft: 'auto', color: 'var(--dsw-alias-label-tertiary)', transition: 'transform 0.16s', display: 'inline-flex' },
+  /** Status + chevron grouped at the right edge, so a card without a status still pins its chevron. */
+  collapseMeta: { display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flex: 'none' },
+  collapseStatus: { fontSize: 12, lineHeight: '17px', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-tertiary)' },
+  collapseStatusOn: { color: 'var(--dsw-alias-state-success-label, var(--dsw-alias-label-secondary))' },
+  collapseChevron: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', transition: 'transform 0.16s', display: 'inline-flex' },
   collapseChevronOpen: { transform: 'rotate(180deg)' },
   collapseBody: { display: 'flex', flexDirection: 'column', gap: 14 },
 }
@@ -154,6 +158,50 @@ async function saveSearchSettings(payload: {
   return (await request('/api/magpie-settings', 'POST', payload)) as MagpieSettingsView
 }
 
+/** Props of {@link CollapsibleCard}. */
+interface CollapsibleCardProps {
+  /** Card heading; the only thing visible while collapsed. */
+  title: string
+  /** Short state summary left of the chevron, visible whether open or collapsed. */
+  status?: string
+  /** Tint the status as active; off/unset/unavailable stay muted. */
+  statusOn?: boolean
+  open: boolean
+  onToggle: () => void
+  /** Card content; unmounted rather than hidden while collapsed. */
+  children: unknown
+}
+
+/**
+ * A settings card whose body folds away behind its title row.
+ *
+ * Secondary cards start collapsed so the page opens on the controls that
+ * matter first. The whole title row is a `<button>` (keyboard reachable) and
+ * carries `aria-expanded`, so the state is not conveyed by the chevron alone;
+ * the body is unmounted rather than visually hidden, so a collapsed card
+ * cannot hold focus or be read by a screen reader.
+ */
+function CollapsibleCard({ title, status, statusOn, open, onToggle, children }: CollapsibleCardProps): unknown {
+  return (
+    <div style={{ ...css.card, gap: open ? 14 : 0 }}>
+      <button type="button" aria-expanded={open} onClick={onToggle} style={css.collapseHead}>
+        <h3 style={css.cardTitle}>{title}</h3>
+        <span style={css.collapseMeta}>
+          {status === undefined ? null : (
+            <span style={{ ...css.collapseStatus, ...(statusOn === true ? css.collapseStatusOn : {}) }}>{status}</span>
+          )}
+          <span style={{ ...css.collapseChevron, ...(open ? css.collapseChevronOpen : {}) }} aria-hidden="true">
+            <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" focusable="false">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </span>
+        </span>
+      </button>
+      {open ? <div style={css.collapseBody}>{children}</div> : null}
+    </div>
+  )
+}
+
 export function MagpieSettings(): unknown {
   useLocaleRevision()
   const [baseUrl, setBaseUrl] = useState('')
@@ -179,6 +227,8 @@ export function MagpieSettings(): unknown {
   const [webKeyError, setWebKeyError] = useState<string | undefined>(undefined)
   /** The interface card is secondary; keep the settings page's core controls first. */
   const [enhancementsOpen, setEnhancementsOpen] = useState(false)
+  /** 网页搜索同样是可选功能，默认收缩，让连接配置与模型列表先被看到。 */
+  const [searchOpen, setSearchOpen] = useState(false)
   /** 网页搜索相关设置与 DSH 绑定状态。 */
   const [searchMode, setSearchMode] = useState<MagpieSearchMode>('mcp')
   const [searchModel, setSearchModel] = useState('')
@@ -513,6 +563,26 @@ export function MagpieSettings(): unknown {
               ? text('webSearchOtherProviderHint', { provider: activeSearchProvider })
               : text('webSearchInactiveHint')
 
+  /**
+   * 标题右侧的一句话状态：收缩时也能看出该区块是否已经生效。首次读取完成前
+   * 不显示，否则初始的 `false` 会先闪一下「不可用」。
+   */
+  const searchStatus: { text: string; on?: boolean } | undefined = !loaded
+    ? undefined
+    : !searchRegistered
+      ? { text: text('statusUnavailable') }
+      : searchActive
+        ? { text: text('statusOn'), on: true }
+        : { text: text('statusOff') }
+  /** 界面增强的主体是输入框路由图标；Web Key 未保存时整块不可用。 */
+  const enhancementsStatus: { text: string; on?: boolean } | undefined = !loaded
+    ? undefined
+    : !hasWebKey
+      ? { text: text('statusUnset') }
+      : showComposerIcon
+        ? { text: text('statusOn'), on: true }
+        : { text: text('statusOff') }
+
   return (
     <section style={css.section}>
       <header style={css.header}>
@@ -567,8 +637,13 @@ export function MagpieSettings(): unknown {
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
       </div>
 
-      <div style={css.card}>
-        <h3 style={css.cardTitle}>{text('webSearch')}</h3>
+      <CollapsibleCard
+        title={text('webSearch')}
+        status={searchStatus?.text}
+        statusOn={searchStatus?.on}
+        open={searchOpen}
+        onToggle={() => setSearchOpen((open) => !open)}
+      >
         <p style={css.hint}>{text('webSearchIntro')}</p>
         <label style={css.switchRow}>
           <input
@@ -670,24 +745,15 @@ export function MagpieSettings(): unknown {
           </p>
         )}
         {searchNotice === undefined ? null : <p style={css.ok}>{searchNotice}</p>}
-      </div>
+      </CollapsibleCard>
 
-      <div style={{ ...css.card, gap: enhancementsOpen ? 14 : 0 }}>
-        <button
-          type="button"
-          aria-expanded={enhancementsOpen}
-          onClick={() => setEnhancementsOpen((open) => !open)}
-          style={css.collapseHead}
-        >
-          <h3 style={css.cardTitle}>{text('enhancements')}</h3>
-          <span style={{ ...css.collapseChevron, ...(enhancementsOpen ? css.collapseChevronOpen : {}) }} aria-hidden="true">
-            <svg width={14} height={14} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" focusable="false">
-              <path d="M4 6l4 4 4-4" />
-            </svg>
-          </span>
-        </button>
-        {enhancementsOpen ? (
-        <div style={css.collapseBody}>
+      <CollapsibleCard
+        title={text('enhancements')}
+        status={enhancementsStatus?.text}
+        statusOn={enhancementsStatus?.on}
+        open={enhancementsOpen}
+        onToggle={() => setEnhancementsOpen((open) => !open)}
+      >
         <div style={css.field}>
           <span style={css.label}>{text('webKey')}</span>
           <Input type="password" value={webKey} placeholder={text(hasWebKey ? 'webKeySavedPlaceholder' : 'webKeyPlaceholder')} disabled={working || webKeyStatus === 'saving'} onChange={(event: { currentTarget: { value: string } }) => setWebKey(event.currentTarget.value)} />
@@ -723,9 +789,7 @@ export function MagpieSettings(): unknown {
             {text('composerIconFailed', { message: iconError })}
           </p>
         )}
-        </div>
-        ) : null}
-      </div>
+      </CollapsibleCard>
 
       <ModelListEditor
         models={models}

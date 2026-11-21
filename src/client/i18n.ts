@@ -140,6 +140,11 @@ export const EN: Dict = {
   'trace.phase.upstream': 'at the vendor',
   'trace.phase.redact': 'masking',
   enhancements: 'Interface enhancements',
+  /** Collapsed-card state summary shown left of the chevron. */
+  statusOn: 'On',
+  statusOff: 'Off',
+  statusUnavailable: 'Unavailable',
+  statusUnset: 'Not set up',
   webKeyHint: 'Optional; required by the interface-enhancement API. Get it from the magpie config file or its start-up log.',
   webKeySave: 'Save Web Key',
   webKeySaved: 'Saved — routing details and logos are now available.',
@@ -315,6 +320,11 @@ export const ZH: Dict = {
   'trace.phase.upstream': '供应商处理中',
   'trace.phase.redact': '脱敏中',
   enhancements: '界面增强',
+  /** 折叠卡片标题右侧的状态摘要。 */
+  statusOn: '已开启',
+  statusOff: '已关闭',
+  statusUnavailable: '不可用',
+  statusUnset: '未配置',
   webKeyHint: '可选；界面增强 API 需要设置，可以从 magpie 配置文件或启动 log 中获取。',
   webKeySave: '保存 Web Key',
   webKeySaved: '已保存——路由详情与 logo 已启用。',
