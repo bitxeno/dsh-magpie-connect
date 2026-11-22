@@ -12,13 +12,21 @@ is documented here because it spans three files that must move together.
    GitHub Release body and the plugin market's "what changed" dialog; see
    [scripts/release-notes.mjs](scripts/release-notes.mjs) for the matching
    rules). A version with no section is not an error: the release ships with
-   the install snippet alone.
+   the install snippet alone. Write bullet points **for users**: say what they
+   get and why it matters, not how it is implemented — no file names, symbols,
+   API paths, `Promise.all`/type/field names, or before/after code talk. Keep
+   each item one or two plain sentences; the reader is a plugin user, not the
+   diff (see the entries under `## v0.8.0` for the intended granularity).
 2. Bump `version` in **both** `package.json` and `dsh.plugin.json` to the same
    value (the workflow fails on a mismatch). A version carrying a `-` (e.g.
    `0.7.0-rc.1`) is tagged as a prerelease and published to npm's `next`
    dist-tag — GitHub's `releases/latest` (and therefore the market's update
    notes) ignores prereleases.
-3. Commit as `chore(release): v<version>` and push to `main`. Only pushes
+3. If the build bakes the version in (`build.mjs` defines `__PLUGIN_VERSION__`),
+   rebuild `lib/` **after** the bump and commit it in the same release commit —
+   the committed `lib/` is what npm publishes, so a stale string there ships a
+   wrong version.
+4. Commit as `chore(release): v<version>` and push to `main`. Only pushes
    touching `package.json`/`dsh.plugin.json` trigger the pipeline
    (.github/workflows/release.yml); `workflow_dispatch` re-runs it in place.
 
