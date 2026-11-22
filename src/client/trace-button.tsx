@@ -447,13 +447,14 @@ function ActiveRow(props: { key?: string; row: ActiveRequestRow }): unknown {
     : (text(`trace.phase.${row.phase}`) !== `trace.phase.${row.phase}` ? text(`trace.phase.${row.phase}`) : row.phase)
   const model = row.model ?? ''
   const took = formatDuration(durationParts(row.ms), 'took')
+  const mainLabel = `${row.agent ?? ''}${model !== '' ? ` · ${model}` : ''}`
   return (
     <div style={requestRowStyle}>
       <span style={{ ...dotWrapStyle, color: row.own === true ? 'var(--dsw-alias-brand-primary, #4cc9f0)' : 'var(--dsw-alias-state-warning-primary, var(--dsw-alias-label-tertiary, #facc15))' }}>
         {TraceDotIcon()}
       </span>
       <span style={rowTextStyle}>
-        <span style={rowMainStyle}>
+        <span style={rowMainStyle} title={mainLabel}>
           {row.agent ?? ''}
           {model !== '' ? <span style={{ color: 'var(--dsw-alias-label-secondary, #c9d2e0)' }}>{` · ${model}`}</span> : null}
           {row.own === true ? <span style={{ color: 'var(--dsw-alias-brand-primary, #4cc9f0)' }}>{` · ${text('trace.thisSession')}`}</span> : null}
@@ -485,14 +486,16 @@ function SessionRouteRow(props: { route: SessionRouteView }): unknown {
   const sub = tries.length > 1
     ? `${text('trace.tryCount', { n: tries.length })}${errorWord !== '' ? ` · ${errorWord}` : ''}`
     : errorWord
+  const mainLabel = model !== '' ? model : text('trace.sessionNone')
+  const groupSuffix = route.group !== undefined && route.group !== asked ? ` · ${route.group}` : ''
   return (
     <div style={requestRowStyle}>
       <span style={{ ...dotWrapStyle, color: TONE_COLOR[tone] }}>{TraceDotIcon()}</span>
       <span style={rowTextStyle}>
-        <span style={rowMainStyle}>
-          {model !== '' ? model : text('trace.sessionNone')}
-          {route.group !== undefined && route.group !== asked ? (
-            <span style={{ color: 'var(--dsw-alias-label-tertiary, #8a94a6)' }}>{` · ${route.group}`}</span>
+        <span style={rowMainStyle} title={`${mainLabel}${groupSuffix}`}>
+          {mainLabel}
+          {groupSuffix !== '' ? (
+            <span style={{ color: 'var(--dsw-alias-label-tertiary, #8a94a6)' }}>{groupSuffix}</span>
           ) : null}
         </span>
         {sub !== '' ? <span style={rowSubStyle}>{sub}</span> : null}
@@ -612,8 +615,8 @@ function RoutingGroupCard(props: { key?: string; section: TraceRoutingSection })
       {showHeader ? (
         <div style={groupHeadStyle}>
           <span style={{ ...dotWrapStyle, paddingTop: 0, color: 'var(--dsw-alias-label-secondary, #c9d2e0)' }}>{TraceFanIcon()}</span>
-          <span style={groupNameStyle}>{section.name}</span>
-          {section.ref !== section.name ? <span style={groupRefStyle}>{section.ref}</span> : null}
+          <span style={groupNameStyle} title={section.name}>{section.name}</span>
+          {section.ref !== section.name ? <span style={groupRefStyle} title={section.ref}>{section.ref}</span> : null}
           <span style={routingPillStyle}>{routingLabel(section.routing)}</span>
         </div>
       ) : null}
@@ -802,9 +805,9 @@ function CandidateCard(props: { key?: string; candidate: TraceCandidate; active?
       <div style={candidateHeadStyle}>
         <span style={{ ...dotWrapStyle, paddingTop: 0, color: dotColor }}>{filledDot ? TraceDotIcon() : TraceHollowDotIcon()}</span>
         <ProviderLogo name={logoName} />
-        <span style={candidateNameStyle}>{who ?? candidate.provider}</span>
-        {candidate.plan !== undefined ? <span style={accountPlanStyle}>{candidate.plan}</span> : null}
-        {modelLabel !== undefined ? <span style={groupRefStyle}>{modelLabel}</span> : null}
+        <span style={candidateNameStyle} title={who ?? candidate.provider}>{who ?? candidate.provider}</span>
+        {candidate.plan !== undefined ? <span style={accountPlanStyle} title={candidate.plan}>{candidate.plan}</span> : null}
+        {modelLabel !== undefined ? <span style={groupRefStyle} title={modelLabel}>{modelLabel}</span> : null}
         <span style={rowRightStyle}>{state.word}</span>
       </div>
       {detail !== '' ? <div style={{ ...candidateDetailStyle, color: detailColor }}>{detail}</div> : null}
