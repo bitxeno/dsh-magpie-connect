@@ -1,8 +1,8 @@
 /**
  * The routing-trace fetcher: reads the gateway's own view of its routing —
- * the request ledger (`/v1/magpie/usage/requests`) and the accounts'
- * allowances (`/v1/magpie/quotas`) — and compresses both into the small
- * {@link TraceView} the composer popover shows.
+ * the accounts' allowances (`/v1/magpie/quotas`) and the in-flight requests
+ * (`/v1/magpie/concurrency`, `/v1/magpie/route`) — and compresses them into
+ * the small {@link TraceView} the composer popover shows.
  *
  * Both endpoints answer this machine and, while Magpie shares on the local
  * network, another machine too — but always with the gateway key, so the
@@ -26,17 +26,12 @@ import type {
   TraceAccountRow,
   TraceCandidate,
   TraceGroup,
-  TraceRequestRow,
   TraceRest,
   TraceRoutingSection,
   TraceStatus,
   TraceSubGroup,
-  TraceTotals,
   TraceView,
 } from './trace-contract.ts'
-
-/** Request rows one popover shows; the gateway returns newest first. */
-export const TRACE_REQUEST_ROWS = 8
 
 /** Account rows one popover shows; the list scrolls past the cap. */
 export const TRACE_ACCOUNT_ROWS = 14
@@ -46,9 +41,6 @@ export const TRACE_ACTIVE_ROWS = 5
 
 /** How long one fetch may take before the popover shows "unreachable". */
 export const TRACE_TIMEOUT_MS = 8_000
-
-/** The `period` the ledger is read for; today keeps the header counts current. */
-const LEDGER_PERIOD = 'today'
 
 /** Path the signed-in Magpie Web console serves beside its HTML. */
 const WEB_TRACE_PATH = '/api/gateway/trace'
@@ -353,39 +345,6 @@ async function fetchJson(base: string, apiKey: string, path: string, signal: Abo
     throw error
   }
   return (await response.json()) as LooseRecord
-}
-
-/**
- * Project one ledger row onto the wire shape. `req` is the routing group or
- * model the agent asked for (`auto/gpt-6-luna`), `served` the model that
- * answered; when they agree one name is enough, so the row stays one line.
- */
-function toRequestRow(row: LooseRecord): TraceRequestRow | undefined {
-  const id = num(row, 'route_id')
-  const time = str(row, 't')
-  if (id === undefined || time === undefined) return undefined
-  const requested = str(row, 'req')
-  const served = str(row, 'served')
-  const provider = str(row, 'providerName')
-  const account = str(row, 'providerAccount')
-  const ms = num(row, 'ms')
-  const ttftMs = num(row, 'ttft_ms')
-  const status = num(row, 'status')
-  const cost = num(row, 'cost')
-  return {
-    id,
-    time,
-    agent: str(row, 'agentName') ?? str(row, 'agent') ?? '?',
-    ...(requested !== undefined ? { requested } : {}),
-    ...(served !== undefined && served !== requested ? { served } : {}),
-    ...(provider !== undefined ? { provider } : {}),
-    ...(account !== undefined ? { account } : {}),
-    ...(ms !== undefined ? { ms } : {}),
-    ...(ttftMs !== undefined ? { ttftMs } : {}),
-    ...(status !== undefined ? { status } : {}),
-    ...(row.canceled === true ? { canceled: true } : {}),
-    ...(cost !== undefined && cost !== 0 ? { cost } : {}),
-  }
 }
 
 /**
@@ -840,8 +799,8 @@ function toSessionRoute(data: LooseRecord): SessionRouteView | undefined {
 
 /**
  * Fetch the full Web trace when a Web Key is configured, then add quotas;
- * otherwise fall back to the gateway-key-only ledger/concurrency view. The
- * session route is a final fallback if the full trace is unavailable.
+ * otherwise fall back to the gateway-key-only concurrency view. The session
+ * route is a final fallback if the full trace is unavailable.
  * A full-trace auth failure is shown beside the fallback data rather than
  * hiding the gateway-key view: the Web Key is optional and can be stale.
  * @param endpoint - effective API endpoint (page settings over patch config).
@@ -868,9 +827,6 @@ export async function fetchTraceView(endpoint: EffectiveEndpoint, signal: AbortS
         .catch((error: unknown) => ({ error }))
     : Promise.resolve(undefined)
 
-  const usage = fetchJson(base, key, `/v1/magpie/usage/requests?limit=${TRACE_REQUEST_ROWS}&period=${LEDGER_PERIOD}`, signal)
-    .then((data) => ({ data }))
-    .catch((error: unknown) => ({ error }))
   const quotas = fetchJson(base, key, '/v1/magpie/quotas', signal)
     .then((data) => ({ data }))
     .catch((error: unknown) => ({ error }))
@@ -882,35 +838,29 @@ export async function fetchTraceView(endpoint: EffectiveEndpoint, signal: AbortS
         .then((data) => ({ data }))
         .catch((error: unknown) => ({ error }))
     : Promise.resolve(undefined)
-  const [usageOut, quotasOut, concurrencyOut, routeOut, fullTraceOut] = await Promise.all([usage, quotas, concurrency, sessionRoute, fullWebTrace])
+  const [quotasOut, concurrencyOut, routeOut, fullTraceOut] = await Promise.all([quotas, concurrency, sessionRoute, fullWebTrace])
 
-  const usageFailed = 'error' in usageOut
-  const quotasFailed = 'error' in quotasOut
-  if (usageFailed && quotasFailed) {
-    // Both halves failed: one status kind, never a throw. An aborted popover
-    // is not a failure worth a message — the caller is gone.
-    const errors: unknown[] = [usageOut.error, quotasOut.error]
-    if (errors.some(isAbort)) return { status: 'network', message: 'aborted', fetchedAt }
-    const first = errors[0] as (Error & { statusCode?: number }) | undefined
-    const kind = first !== undefined && typeof first.statusCode === 'number'
-      ? statusForStatusCode(first.statusCode)
-      : (first instanceof TypeError ? 'network' : 'unknown')
-    return { status: kind, message: first instanceof Error ? first.message : undefined, fetchedAt }
+  // Every gateway-key read rides the same host and key, so a refusal there
+  // fails all of them together; a single-endpoint stumble keeps the partial
+  // view. One status kind, never a throw. An aborted popover is not a failure
+  // worth a message — the caller is gone.
+  const gatewayErrors: unknown[] = [
+    ...('error' in quotasOut ? [quotasOut.error] : []),
+    ...('error' in concurrencyOut ? [concurrencyOut.error] : []),
+    ...((routeOut !== undefined && 'error' in routeOut) ? [routeOut.error] : []),
+  ]
+  if (gatewayErrors.length === (session !== undefined && session !== '' ? 3 : 2)) {
+    const error = gatewayErrors[0] as (Error & { statusCode?: number }) | undefined
+    if (isAbort(error)) return { status: 'network', message: 'aborted', fetchedAt }
+    const kind = typeof error?.statusCode === 'number'
+      ? statusForStatusCode(error.statusCode)
+      : (error instanceof TypeError ? 'network' : 'unknown')
+    return { status: kind, message: error instanceof Error ? error.message : undefined, fetchedAt }
   }
 
-  const usageData = usageFailed ? {} : (usageOut.data as LooseRecord)
-  const quotasData = quotasFailed ? {} : (quotasOut.data as LooseRecord)
+  const quotasData = 'error' in quotasOut ? {} : (quotasOut.data as LooseRecord)
   const concurrencyData = 'error' in concurrencyOut ? undefined : (concurrencyOut.data as LooseRecord)
 
-  const totals: TraceTotals = {
-    requests: num(usageData, 'calls') ?? 0,
-    errors: num(usageData, 'errors') ?? 0,
-    retried: num(usageData, 'retried') ?? 0,
-    canceled: num(usageData, 'canceled') ?? 0,
-    ...(num(usageData, 'credits') !== undefined ? { credits: num(usageData, 'credits') } : {}),
-  }
-  const rows = Array.isArray(usageData.rows) ? (usageData.rows as LooseRecord[]) : []
-  const requests = rows.map(toRequestRow).filter((row): row is TraceRequestRow => row !== undefined)
   const accountsRaw = Array.isArray(quotasData.data) ? (quotasData.data as LooseRecord[]) : []
   const accounts = accountsRaw
     .map(toAccountRow)
@@ -953,10 +903,8 @@ export async function fetchTraceView(endpoint: EffectiveEndpoint, signal: AbortS
     status: 'ok',
     fetchedAt,
     routingUrl,
-    totals,
     ...(webTraceError !== undefined ? { webTraceError } : {}),
     ...(traceFailure instanceof Error ? { webTraceMessage: traceFailure.message } : {}),
-    ...(requests.length > 0 ? { requests } : {}),
     ...(accounts.length > 0 ? { accounts } : {}),
     ...(concurrencyData !== undefined ? { concurrency: toConcurrency(concurrencyData) } : {}),
     ...(active.length > 0 ? { active } : {}),

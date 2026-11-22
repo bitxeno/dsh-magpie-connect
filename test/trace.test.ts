@@ -11,15 +11,12 @@ import {
   accountLine,
   durationParts,
   isUsageCritical,
-  requestModelLabel,
-  requestPlaceLabel,
-  requestTone,
   resetParts,
   usageBars,
   usageText,
   USAGE_BARS,
 } from '../src/client/trace-format.ts'
-import type { TraceAccountRow, TraceRequestRow } from '../src/trace-contract.ts'
+import type { TraceAccountRow } from '../src/trace-contract.ts'
 
 function fakeFetch(routes: Record<string, unknown>, status = 200) {
   return (async (url: string | URL) => {
@@ -30,42 +27,6 @@ function fakeFetch(routes: Record<string, unknown>, status = 200) {
     if (body === undefined) return new Response(JSON.stringify({ error: 'no route' }), { status })
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
   }) as typeof fetch
-}
-
-const ledgerBody = {
-  object: 'list',
-  period: 'today',
-  calls: 1019,
-  errors: 1,
-  retried: 3,
-  canceled: 2,
-  credits: 12.5,
-  rows: [
-    {
-      route_id: 1794489378073,
-      t: '2026-11-13T22:58:39+08:00',
-      agent: 'OpenAI',
-      agentName: 'OpenAI',
-      provider: 'workbuddy',
-      providerName: 'WorkBuddy',
-      providerAccount: 'momo',
-      model: 'deepseek-v4.1-flash',
-      req: 'group/bot',
-      served: 'deepseek-v4.1-flash',
-      ms: 6690,
-      ttft_ms: 1997,
-      status: 200,
-      cost: 0,
-    },
-    {
-      route_id: 1794489378072,
-      t: '2026-11-13T22:40:19+08:00',
-      agent: 'magpie',
-      agentName: 'magpie',
-      ms: 1238,
-      status: 401,
-    },
-  ],
 }
 
 const quotasBody = {
@@ -127,29 +88,14 @@ test('fetchTraceView reports unconfigured without an endpoint', async () => {
   assert.equal(view.routingUrl, 'http://api.lan/?view=routing')
 })
 
-test('fetchTraceView compresses the ledger and the quotas into the wire view', async () => {
+test('fetchTraceView compresses the quotas into the wire view', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': ledgerBody,
     '/v1/magpie/quotas': quotasBody,
   })
   try {
     const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal)
     assert.equal(view.status, 'ok')
-    assert.deepEqual(view.totals, { requests: 1019, errors: 1, retried: 3, canceled: 2, credits: 12.5 })
-    assert.equal(view.requests?.length, 2)
-    const first = view.requests?.[0]
-    assert.equal(first?.agent, 'OpenAI')
-    // served === requested collapses to the asked name alone.
-    assert.equal(first?.requested, 'group/bot')
-    assert.equal(first?.served, 'deepseek-v4.1-flash')
-    assert.equal(first?.provider, 'WorkBuddy')
-    assert.equal(first?.account, 'momo')
-    assert.equal(first?.ms, 6690)
-    assert.equal(first?.status, 200)
-    const second = view.requests?.[1]
-    assert.equal(second?.status, 401)
-    assert.equal(second?.provider, undefined)
     const accounts = view.accounts ?? []
     assert.equal(accounts.length, 3)
     assert.equal(accounts[0]?.provider, 'WorkBuddy')
@@ -165,17 +111,18 @@ test('fetchTraceView compresses the ledger and the quotas into the wire view', a
   }
 })
 
-test('fetchTraceView keeps a partial view when one endpoint fails', async () => {
+test('fetchTraceView keeps a partial view when the quotas endpoint fails', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': ledgerBody,
     '/v1/magpie/quotas': Object.assign(new Error('HTTP 500'), { statusCode: 500 }),
+    '/v1/magpie/concurrency': { object: 'concurrency', requests: 1, waiting: 0, tools: 0, active: [] },
+    '/v1/magpie/route': { session: 'x', seq: 0, route: null },
   })
   try {
-    const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal)
+    const view = await fetchTraceView({ baseUrl: 'http://api.lan/v1', apiKey: 'k' }, new AbortController().signal, 'x')
     assert.equal(view.status, 'ok')
-    assert.equal(view.requests?.length, 2)
     assert.equal(view.accounts, undefined)
+    assert.equal(view.concurrency?.requests, 1)
   } finally {
     globalThis.fetch = saved
   }
@@ -200,7 +147,6 @@ test('fetchTraceView caps account rows', async () => {
     windows: [{ used: index }],
   }))
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': { data: many },
   })
   try {
@@ -252,7 +198,6 @@ test('fetchTraceView reads the session route when a session is named', async () 
 test('fetchTraceView omits the session route for an unknown session and without one', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': { data: [] },
     '/v1/magpie/route': { session: 'x', seq: 0, route: null },
   })
@@ -271,7 +216,6 @@ test('fetchTraceView omits the session route for an unknown session and without 
 test('fetchTraceView reads in-flight requests and pins the own session first', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': { data: [] },
     '/v1/magpie/concurrency': {
       object: 'concurrency',
@@ -307,7 +251,6 @@ test('fetchTraceView reads in-flight requests and pins the own session first', a
 test('fetchTraceView keeps nested routing groups as separate compact sections', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': { data: [] },
     '/api/gateway/trace': {
       seq: 10,
@@ -404,7 +347,6 @@ test('fetchTraceView falls back to the newest overall route without a session', 
     ms: 950,
   })
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': { data: [] },
     '/api/gateway/trace': { seq: 3, routes: [route(1, 'session-a'), route(2, 'session-b')] },
   })
@@ -476,19 +418,6 @@ test('usageBars maps the share onto the gauge', () => {
   assert.equal(isUsageCritical(90), true)
 })
 
-test('request helpers project rows onto one line each', () => {
-  const ok: TraceRequestRow = { id: 1, time: 't', agent: 'OpenAI', requested: 'group/bot', served: 'deepseek-v4.1-flash', provider: 'WorkBuddy', account: 'momo', status: 200 }
-  assert.deepEqual(requestTone(ok), 'ok')
-  assert.equal(requestModelLabel(ok), 'group/bot → deepseek-v4.1-flash')
-  assert.equal(requestPlaceLabel(ok), 'WorkBuddy · momo')
-  const failed: TraceRequestRow = { id: 2, time: 't', agent: 'magpie', status: 401 }
-  assert.deepEqual(requestTone(failed), 'failed')
-  assert.equal(requestModelLabel(failed), '')
-  assert.equal(requestPlaceLabel(failed), '')
-  const canceled: TraceRequestRow = { id: 3, time: 't', agent: 'a', canceled: true, status: 499 }
-  assert.deepEqual(requestTone(canceled), 'canceled')
-})
-
 test('accountLine flags the errored accounts instead of drawing numbers', () => {
   const now = Date.parse('2026-11-13T00:00:00Z')
   const healthy: TraceAccountRow = { provider: 'WorkBuddy', plan: 'Free', user: 'momo', usedPct: 38, resetsAt: '2026-11-30T00:00:00Z' }
@@ -506,7 +435,6 @@ test('accountLine flags the errored accounts instead of drawing numbers', () => 
 test('fetchTraceView picks the aggregate window when the vendor splits credits', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': {
       data: [{
         provider: 'workbuddy',
@@ -537,7 +465,6 @@ test('fetchTraceView picks the aggregate window when the vendor splits credits',
 test('fetchTraceView never lets an unlimited window win the account row', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     '/v1/magpie/quotas': {
       data: [{
         provider: 'copilot',
@@ -563,7 +490,6 @@ test('fetchTraceView never lets an unlimited window win the account row', async 
 test('a candidate gauge and its amount describe the same window', async () => {
   const saved = globalThis.fetch
   globalThis.fetch = fakeFetch({
-    '/v1/magpie/usage/requests': { rows: [], calls: 0, errors: 0, retried: 0, canceled: 0 },
     // The quota read says 100% of the base allowance; the trace row weighs the
     // aggregate. The row's own numbers must win so the bar matches 2610/4091.
     '/v1/magpie/quotas': {
@@ -611,7 +537,7 @@ test('a candidate gauge and its amount describe the same window', async () => {
 
 /** A gateway-view reply with no data, for the endpoints that run alongside the web trace. */
 function emptyGatewayBody(): Response {
-  return new Response(JSON.stringify({ rows: [], calls: 0, errors: 0, retried: 0, canceled: 0, data: [] }), {
+  return new Response(JSON.stringify({ data: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   })

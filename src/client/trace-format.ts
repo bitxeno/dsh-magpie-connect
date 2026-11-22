@@ -9,7 +9,7 @@
  * DOM or fetches — callers feed plain wire values and locale strings.
  */
 
-import type { TraceAccountRow, TraceRequestRow, TraceTotals } from '../trace-contract.ts'
+import type { TraceAccountRow } from '../trace-contract.ts'
 
 /** How a duration is worded: pieces a locale template fills in. */
 export interface DurationParts {
@@ -84,32 +84,6 @@ export function isUsageCritical(usedPct: number | undefined): boolean {
 /** Which dot a request row draws: ok (green), failed (red), canceled (dim). */
 export type RequestTone = 'ok' | 'failed' | 'canceled'
 
-/** Map one request row onto its dot tone. */
-export function requestTone(row: TraceRequestRow): RequestTone {
-  if (row.canceled === true) return 'canceled'
-  if (row.status === undefined) return 'failed'
-  return row.status >= 200 && row.status < 400 ? 'ok' : 'failed'
-}
-
-/**
- * The one-line model label for a request row: "asked → served" only when the
- * gateway served another model than the one asked for; otherwise just the
- * asked name. Absent names collapse to the other side.
- * @param row - the request row.
- * @returns the label, or '' when the row names no model at all.
- */
-export function requestModelLabel(row: TraceRequestRow): string {
-  const asked = row.requested ?? ''
-  const served = row.served ?? ''
-  if (asked !== '' && served !== '' && asked !== served) return `${asked} → ${served}`
-  return asked !== '' ? asked : served
-}
-
-/** Where a request was served, as one "provider · account" string ('' when unknown). */
-export function requestPlaceLabel(row: TraceRequestRow): string {
-  return [row.provider, row.account].filter((part) => part !== undefined && part !== '').join(' · ')
-}
-
 /** A counter rounded for display: at most two decimals, non-finite as absent. */
 function roundAmount(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) ? Math.round(value * 100) / 100 : undefined
@@ -148,19 +122,6 @@ export function usageText(facts: {
       : { template: 'trace.candidate.amount', params: { amount, limit, unit } }
   }
   return usedPct !== undefined ? { template: 'trace.candidate.used', params: { n: usedPct } } : undefined
-}
-
-/** The header line's compressed counts, locale-ready. */
-export interface TotalsParts {
-  readonly requests: number
-  readonly errors: number
-  readonly retried: number
-}
-
-/** Pick the three numbers the header shows (canceled stays in the tooltip). */
-export function totalsParts(totals: TraceTotals | undefined): TotalsParts | undefined {
-  if (totals === undefined) return undefined
-  return { requests: totals.requests, errors: totals.errors, retried: totals.retried }
 }
 
 /** One account row's compact pieces, ready for the locale templates. */

@@ -4,47 +4,21 @@
  * client bundle imports them with `import type`, so no Host module ever
  * ships to the browser.
  *
- * The host compresses two gateway endpoints into this one small view:
+ * The host compresses the gateway endpoints into this one small view:
  *
- * - `GET {gateway}/v1/magpie/usage/requests?limit=N&period=today` — the
- *   request ledger the Routing page draws (newest first), plus the caller
- *   key's totals for the period. Needs the gateway key; reaches another
- *   machine only while Magpie shares on the local network.
  * - `GET {gateway}/v1/magpie/quotas` — every account's allowance windows
- *   (used %, reset time), the account half of the same page.
+ *   (used %, reset time). Needs the gateway key; reaches another machine
+ *   only while Magpie shares on the local network.
+ * - `GET {gateway}/v1/magpie/concurrency` and `/v1/magpie/route` — the
+ *   in-flight rows and the session's own latest route.
+ * - `GET {webRoot}/api/gateway/trace` — the full trace the Routing page
+ *   draws, read with the Web Key when one is configured.
  *
  * `{gateway}` is the configured API base with its version segment (`/v1`)
  * removed, exactly as the routing popover contract states.
  */
 /** How the last fetch ended; drives the popover's hint row. */
 export type TraceStatus = 'ok' | 'unconfigured' | 'unauthorized' | 'forbidden' | 'network' | 'unknown';
-/** One recent request as the popover's top half shows it. */
-export interface TraceRequestRow {
-    /** The gateway's route id (stable row key). */
-    readonly id: number;
-    /** When the request was recorded (RFC 3339). */
-    readonly time: string;
-    /** The agent that sent it, as the ledger names it. */
-    readonly agent: string;
-    /** The model (or routing group) the agent asked for; absent when none. */
-    readonly requested?: string;
-    /** The model the reply said answered. */
-    readonly served?: string;
-    /** The provider that took the request. */
-    readonly provider?: string;
-    /** The provider account that served it. */
-    readonly account?: string;
-    /** Total milliseconds, when the request is done. */
-    readonly ms?: number;
-    /** Milliseconds to the first content. */
-    readonly ttftMs?: number;
-    /** HTTP status the agent saw. */
-    readonly status?: number;
-    /** The agent canceled the request before it was answered. */
-    readonly canceled?: boolean;
-    /** What the request cost, when priced. */
-    readonly cost?: number;
-}
 /** One account's allowance, as the popover's bottom half shows it. */
 export interface TraceAccountRow {
     readonly provider: string;
@@ -68,15 +42,6 @@ export interface TraceAccountRow {
     readonly resetsAt?: string;
     /** Why the account cannot serve right now (e.g. an expired sign-in). */
     readonly error?: string;
-}
-/** The period totals the header line shows. */
-export interface TraceTotals {
-    readonly requests: number;
-    readonly errors: number;
-    readonly retried: number;
-    readonly canceled: number;
-    /** What the period cost in plan credits, when the gateway counts them. */
-    readonly credits?: number;
 }
 /** A rest on a route candidate (`Rest` in Magpie's trace). */
 export interface TraceRest {
@@ -166,8 +131,6 @@ export interface TraceView {
     readonly status: TraceStatus;
     /** Failure detail for the hint row; English, host-side. */
     readonly message?: string;
-    readonly totals?: TraceTotals;
-    readonly requests?: readonly TraceRequestRow[];
     readonly accounts?: readonly TraceAccountRow[];
     /**
      * The addressed session's latest routed request (`/v1/magpie/route`),

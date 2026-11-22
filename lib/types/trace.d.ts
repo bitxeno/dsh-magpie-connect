@@ -1,8 +1,8 @@
 /**
  * The routing-trace fetcher: reads the gateway's own view of its routing —
- * the request ledger (`/v1/magpie/usage/requests`) and the accounts'
- * allowances (`/v1/magpie/quotas`) — and compresses both into the small
- * {@link TraceView} the composer popover shows.
+ * the accounts' allowances (`/v1/magpie/quotas`) and the in-flight requests
+ * (`/v1/magpie/concurrency`, `/v1/magpie/route`) — and compresses them into
+ * the small {@link TraceView} the composer popover shows.
  *
  * Both endpoints answer this machine and, while Magpie shares on the local
  * network, another machine too — but always with the gateway key, so the
@@ -14,8 +14,6 @@
  */
 import { type EffectiveEndpoint } from './settings.ts';
 import type { TraceStatus, TraceView } from './trace-contract.ts';
-/** Request rows one popover shows; the gateway returns newest first. */
-export declare const TRACE_REQUEST_ROWS = 8;
 /** Account rows one popover shows; the list scrolls past the cap. */
 export declare const TRACE_ACCOUNT_ROWS = 14;
 /** In-flight rows one popover shows; the own session's row is kept first. */
@@ -44,8 +42,8 @@ export declare function fetchWebIcon(base: string, webKey: string, name: string,
 }>;
 /**
  * Fetch the full Web trace when a Web Key is configured, then add quotas;
- * otherwise fall back to the gateway-key-only ledger/concurrency view. The
- * session route is a final fallback if the full trace is unavailable.
+ * otherwise fall back to the gateway-key-only concurrency view. The session
+ * route is a final fallback if the full trace is unavailable.
  * A full-trace auth failure is shown beside the fallback data rather than
  * hiding the gateway-key view: the Web Key is optional and can be stale.
  * @param endpoint - effective API endpoint (page settings over patch config).

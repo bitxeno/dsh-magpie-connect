@@ -8,7 +8,7 @@
  * its group when the group header already says it. Nothing here touches the
  * DOM or fetches — callers feed plain wire values and locale strings.
  */
-import type { TraceAccountRow, TraceRequestRow, TraceTotals } from '../trace-contract.ts';
+import type { TraceAccountRow } from '../trace-contract.ts';
 /** How a duration is worded: pieces a locale template fills in. */
 export interface DurationParts {
     readonly n: number;
@@ -50,18 +50,6 @@ export declare function usageBars(usedPct: number | undefined): number | undefin
 export declare function isUsageCritical(usedPct: number | undefined): boolean;
 /** Which dot a request row draws: ok (green), failed (red), canceled (dim). */
 export type RequestTone = 'ok' | 'failed' | 'canceled';
-/** Map one request row onto its dot tone. */
-export declare function requestTone(row: TraceRequestRow): RequestTone;
-/**
- * The one-line model label for a request row: "asked → served" only when the
- * gateway served another model than the one asked for; otherwise just the
- * asked name. Absent names collapse to the other side.
- * @param row - the request row.
- * @returns the label, or '' when the row names no model at all.
- */
-export declare function requestModelLabel(row: TraceRequestRow): string;
-/** Where a request was served, as one "provider · account" string ('' when unknown). */
-export declare function requestPlaceLabel(row: TraceRequestRow): string;
 /** Which locale template words a candidate's usage. */
 export type UsageTemplate = 'trace.candidate.amountPct' | 'trace.candidate.amount' | 'trace.candidate.used';
 /** One candidate's usage line: the template to fill and its params. */
@@ -83,14 +71,6 @@ export declare function usageText(facts: {
     readonly unit?: string;
     readonly usedPct?: number;
 }): UsageText | undefined;
-/** The header line's compressed counts, locale-ready. */
-export interface TotalsParts {
-    readonly requests: number;
-    readonly errors: number;
-    readonly retried: number;
-}
-/** Pick the three numbers the header shows (canceled stays in the tooltip). */
-export declare function totalsParts(totals: TraceTotals | undefined): TotalsParts | undefined;
 /** One account row's compact pieces, ready for the locale templates. */
 export interface AccountLine {
     readonly provider: string;

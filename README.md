@@ -14,7 +14,7 @@
 - **图片识别** — 网关声明支持图片的模型可以直接发图。
 - **思考档位** — 网关支持的思考档位（含 `none`、`ultra`）原样出现在选择器里。
 - **网页搜索切换** — 注册为 DSH 的独立搜索提供方（复用已保存的网关地址与 API Key），在设置页一键切换 DSH 的 `web_search` 到 Magpie；默认沿用 Magpie 自身的代搜模型或 Search API 配置（无需在资源库开启 MCP 路由），也支持指定 Magpie 模型（Messages API）并随时在页面切换，无需手改 `cordis.patch.yml`。
-- **路由浮窗** — 输入框右侧的 Magpie 图标，桌面悬停（手机端点按）即显示网关路由的压缩视图：当前会话最近一次请求走了哪条路由、命中/避开了哪些账号/模型及耗时；无会话时回退显示整份 trace 里最新的一条路由。数据由插件在 Host 侧用已保存的 Key 读取（`/api/magpie-trace`，聚合网关的 `/v1/magpie/usage/requests`、`/v1/magpie/quotas`、`/v1/magpie/concurrency` 与 Web 的 `/api/gateway/trace`），浏览器不接触 Key；账号持有人只以首字符形式出现在页面上。
+- **路由浮窗** — 输入框右侧的 Magpie 图标，桌面悬停（手机端点按）即显示网关路由的压缩视图：当前会话最近一次请求走了哪条路由、命中/避开了哪些账号/模型及耗时；无会话时回退显示整份 trace 里最新的一条路由。数据由插件在 Host 侧用已保存的 Key 读取（`/api/magpie-trace`，聚合网关的 `/v1/magpie/quotas`、`/v1/magpie/concurrency`、`/v1/magpie/route` 与 Web 的 `/api/gateway/trace`），浏览器不接触 Key；账号持有人只以首字符形式出现在页面上。
 - **完整路由组详情（可选）** — 在设置页填入 Magpie Web Key 后，浮窗会从 Magpie Web 的完整 trace 读取当前会话的路由组、嵌套子路由组（如 `Hy4 auto/hy4free`、`GPT-6 Luna auto/gpt-6-luna`）、候选账号、逐次尝试、限流/失效原因与恢复时间，并通过 Host 同源代理显示供应商图标；Web Key 仅保存在 Host 的 `settings.json`（文件权限 `0600`），设置页不回显。未配置或 Web Key 失效时自动回退到简化视图。
 
 ## 安装
