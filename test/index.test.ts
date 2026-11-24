@@ -2,11 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   apply,
   DISCOVER_API,
+  MCP_TEST_API,
   MODELS_API,
   SEARCH_TEST_API,
   SETTINGS_API,
@@ -62,6 +63,8 @@ interface StubContextOptions {
   preRegisteredSearchProviders?: readonly WebSearchProvider[]
   /** 注入 `settings.mutate` 失败钩子，验证原子性。 */
   mutateError?: () => Error | undefined
+  /** 是否提供 `ctx.tools`（默认提供；设 false 模拟没有工具服务的精简组合）。 */
+  withTools?: boolean
 }
 
 function stubContext(options: StubContextOptions = {}): PluginContext & {
@@ -71,6 +74,7 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
   searchProviders: Map<string, WebSearchProvider>
   webConfig: { searchProvider?: string }
   disposers: Array<() => unknown>
+  registeredTools: Map<string, unknown>
 } {
   const routes: Route[] = []
   const adapters: Array<{ providers: string[] }> = []
@@ -82,6 +86,8 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
     ...(options.initialSearchProvider !== undefined ? { searchProvider: options.initialSearchProvider } : {}),
   }
   const disposers: Array<() => unknown> = []
+  /** 已注册的工具名 → 定义，供断言“是否已启动/未启动”与注册了哪些工具。 */
+  const registeredTools = new Map<string, unknown>()
   const ctx: PluginContext & {
     routes: Route[]
     adapters: Array<{ providers: string[] }>
@@ -89,6 +95,7 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
     searchProviders: Map<string, WebSearchProvider>
     webConfig: { searchProvider?: string }
     disposers: Array<() => unknown>
+    registeredTools: Map<string, unknown>
   } = {
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     routes,
@@ -97,6 +104,7 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
     searchProviders,
     webConfig,
     disposers,
+    registeredTools,
     emit: (event: string) => {
       emitted.push(event)
     },
@@ -178,6 +186,19 @@ function stubContext(options: StubContextOptions = {}): PluginContext & {
                   if (op.op === 'set') webConfig.searchProvider = String(op.value)
                   else delete webConfig.searchProvider
                 }
+              }
+            },
+          },
+        })
+        if (typeof dispose === 'function') disposers.push(dispose as () => unknown)
+      }
+      if (deps.includes('tools') && options.withTools !== false) {
+        const dispose = fn({
+          tools: {
+            register: (definition: { name: string }) => {
+              registeredTools.set(definition.name, definition)
+              return () => {
+                registeredTools.delete(definition.name)
               }
             },
           },
@@ -283,6 +304,12 @@ test('apply registers the adapter and serves settings/models/test routes', async
     hasWebKey: false,
     inheritedModels: true,
     showComposerIcon: true,
+    mcpEnabled: false,
+    mcpAvailable: true,
+    mcpRegistered: false,
+    mcpMode: 'direct',
+    mcpHubToolCount: 0,
+    mcpRegisteredCount: 0,
     searchMode: 'mcp',
     searchModel: '',
     searchMaxUses: 5,
@@ -324,6 +351,12 @@ test('POST settings persists the allowlist, narrows the picker, and validates', 
     enabledModels: ['b'],
     inheritedModels: false,
     showComposerIcon: true,
+    mcpEnabled: false,
+    mcpAvailable: true,
+    mcpRegistered: false,
+    mcpMode: 'direct',
+    mcpHubToolCount: 0,
+    mcpRegisteredCount: 0,
     searchMode: 'mcp',
     searchModel: '',
     searchMaxUses: 5,
@@ -388,6 +421,12 @@ test('an autosave that sends only enabledModels leaves credentials untouched', a
     enabledModels: ['b'],
     inheritedModels: false,
     showComposerIcon: true,
+    mcpEnabled: false,
+    mcpAvailable: true,
+    mcpRegistered: false,
+    mcpMode: 'direct',
+    mcpHubToolCount: 0,
+    mcpRegisteredCount: 0,
     searchMode: 'mcp',
     searchModel: '',
     searchMaxUses: 5,
@@ -1136,4 +1175,256 @@ test('同时提交搜索配置与开关时保证原子性：mutate 失败不写 
   assert.equal((failedSave.payload as { ok: boolean }).ok, false)
   assert.match((failedSave.payload as { error: string }).error, /unreadable/)
   assert.equal(ctxB.webConfig.searchProvider, 'deepseek-search-api', 'store.save 失败后 web.searchProvider 必须回滚到原值')
+})
+
+test('MCP tools stay off until enabled; small hubs register direct, large hubs go on-demand', async (t) => {
+  // A hub that lists a given number of tools; answers bare tools/list (no session).
+  const makeHub = (toolNames: string[]) => {
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+      req.on('end', () => {
+        if (req.url !== '/mcp/magpie/hub') {
+          res.writeHead(404)
+          res.end('not found')
+          return
+        }
+        if (req.headers.authorization !== 'Bearer gw-secret' && req.headers.authorization !== 'Bearer next-secret') {
+          res.writeHead(403)
+          res.end('bad key')
+          return
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { id?: number; method?: string }
+        if (body.method === 'tools/list') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? null, result: { tools: toolNames.map((name) => ({ name })) } }))
+          return
+        }
+        res.writeHead(202)
+        res.end()
+      })
+    })
+    return server
+  }
+
+  // --- small hub (3 tools) → direct registration ---
+  const small = makeHub(['a__one', 'a__two', 'b__three'])
+  await new Promise<void>((resolve) => small.listen(0, '127.0.0.1', resolve))
+  t.after(() => small.close())
+  const smallAddr = small.address()
+  assert.ok(smallAddr && typeof smallAddr === 'object')
+  const smallOrigin = `http://127.0.0.1:${smallAddr.port}/v1`
+
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: smallOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-')) })
+  await settled()
+
+  // Default off: no tools, no connection.
+  assert.equal(ctx.registeredTools.size, 0, 'MCP 工具默认不启动')
+  const before = (await callRoute(ctx.routes, SETTINGS_API, 'GET')).payload as { value: Record<string, unknown> }
+  assert.equal(before.value.mcpAvailable, true)
+  assert.equal(before.value.mcpEnabled, false)
+  assert.equal(before.value.mcpRegistered, false)
+
+  // Enable → tools/list → 3 direct tools registered.
+  const on = await callRoute(ctx.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  assert.equal((on.payload as { ok: boolean }).ok, true)
+  await settled()
+  assert.deepEqual([...ctx.registeredTools.keys()].sort(), ['mcp__magpie__a__one', 'mcp__magpie__a__two', 'mcp__magpie__b__three'])
+  const after = (on.payload as { value: Record<string, unknown> }).value
+  assert.equal(after.mcpEnabled, true)
+  assert.equal(after.mcpRegistered, true)
+  assert.equal(after.mcpMode, 'direct')
+  assert.equal(after.mcpRegisteredCount, 3)
+  assert.equal(after.mcpHubToolCount, 3)
+
+  // Disable → all tools removed.
+  const off = await callRoute(ctx.routes, SETTINGS_API, 'POST', { mcpEnabled: false })
+  assert.equal((off.payload as { ok: boolean }).ok, true)
+  await settled()
+  assert.equal(ctx.registeredTools.size, 0)
+  assert.equal((off.payload as { value: Record<string, unknown> }).value.mcpRegistered, false)
+  small.close()
+
+  // --- large hub (12 tools) → on-demand: only find_tools + call_tool ---
+  const bigNames = Array.from({ length: 12 }, (_, i) => `srv__tool_${i}`)
+  const big = makeHub(bigNames)
+  await new Promise<void>((resolve) => big.listen(0, '127.0.0.1', resolve))
+  t.after(() => big.close())
+  const bigAddr = big.address()
+  assert.ok(bigAddr && typeof bigAddr === 'object')
+  const bigOrigin = `http://127.0.0.1:${bigAddr.port}/v1`
+
+  __resetSettingsRoutes()
+  const ctx2 = stubContext()
+  apply(ctx2, { baseUrl: bigOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-big-')) })
+  await settled()
+  const on2 = await callRoute(ctx2.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  assert.equal((on2.payload as { ok: boolean }).ok, true)
+  await settled()
+  assert.deepEqual([...ctx2.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
+  const after2 = (on2.payload as { value: Record<string, unknown> }).value
+  assert.equal(after2.mcpMode, 'on-demand')
+  assert.equal(after2.mcpHubToolCount, 12)
+  assert.equal(after2.mcpRegisteredCount, 2)
+})
+
+test('enabling the MCP tools is refused without ctx.tools or a configured endpoint', async (t) => {
+  const { server, origin } = await withServer(gatewayBody)
+  t.after(() => server.close())
+
+  // No ctx.tools: refuse, and nothing registers.
+  __resetSettingsRoutes()
+  const noTools = stubContext({ withTools: false })
+  apply(noTools, { baseUrl: origin, apiKey: 'test-key', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-none-')) })
+  await settled()
+  const rejected = await callRoute(noTools.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  assert.equal((rejected.payload as { ok: boolean }).ok, false)
+  assert.match((rejected.payload as { error: string }).error, /MCP manager is unavailable|ctx\.tools|MCP tools/)
+  assert.equal(noTools.registeredTools.size, 0)
+
+  // Has ctx.tools but endpoint unconfigured (no key): refuse too.
+  __resetSettingsRoutes()
+  const unconfigured = stubContext()
+  apply(unconfigured, { baseUrl: origin, apiKey: '', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-nocfg-')) })
+  await settled()
+  const refused = await callRoute(unconfigured.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  assert.equal((refused.payload as { ok: boolean }).ok, false)
+  assert.match((refused.payload as { error: string }).error, /configure API URL and apiKey/)
+  assert.equal(unconfigured.registeredTools.size, 0)
+})
+
+test('the MCP test route probes the hub over HTTP without registering anything', async (t) => {
+  // The route probes the same address registration would use. This hub listens
+  // on loopback, so that is the local agent address (/mcp/magpie/hub/dsh).
+  // A gateway that answers the hub's initialize + tools/list over Streamable HTTP.
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => {
+      if (req.url !== '/mcp/magpie/hub/dsh') {
+        res.writeHead(404)
+        res.end('not found')
+        return
+      }
+      if (req.headers.authorization !== 'Bearer gw-secret') {
+        res.writeHead(403)
+        res.end('bad key')
+        return
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { id?: number; method?: string }
+      const send = (payload: unknown) => {
+        res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'sess' })
+        res.end(JSON.stringify(payload))
+      }
+      if (body.method === 'initialize') {
+        send({ jsonrpc: '2.0', id: body.id ?? null, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'magpie', version: '1' } } })
+        return
+      }
+      if (body.method === 'tools/list') {
+        send({ jsonrpc: '2.0', id: body.id ?? null, result: { tools: [{ name: 'web_search' }, { name: 'github__create_issue' }] } })
+        return
+      }
+      res.writeHead(202)
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const origin = `http://127.0.0.1:${address.port}/v1`
+
+  __resetSettingsRoutes()
+  const ctx = stubContext()
+  apply(ctx, { baseUrl: origin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-probe-')) })
+  await settled()
+
+  const tested = await callRoute(ctx.routes, MCP_TEST_API, 'POST', {})
+  assert.equal((tested.payload as { ok: boolean }).ok, true)
+  const value = (tested.payload as { value: { ok: boolean; toolCount: number; toolNames: string[] } }).value
+  assert.equal(value.ok, true)
+  assert.equal(value.toolCount, 2)
+  assert.deepEqual(value.toolNames, ['web_search', 'github__create_issue'])
+  // The probe never registers a tool and never leaks the key.
+  assert.equal(ctx.registeredTools.size, 0)
+  assert.equal(JSON.stringify(tested.payload).includes('gw-secret'), false)
+})
+
+test('a local gateway uses the agent address and passes Magpie on-demand through; a remote one uses all-apps and does it here', async (t) => {
+  /** A hub that records the path asked and answers with a chosen tool set. */
+  const makeHub = (answer: (path: string) => string[]) => {
+    const seen: string[] = []
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+      req.on('end', () => {
+        const url = req.url ?? ''
+        if (!url.startsWith('/mcp/magpie/hub')) {
+          res.writeHead(404)
+          res.end('not found')
+          return
+        }
+        seen.push(url)
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { id?: number; method?: string }
+        if (body.method === 'tools/list') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? null, result: { tools: answer(url).map((name) => ({ name })) } }))
+          return
+        }
+        res.writeHead(202)
+        res.end()
+      })
+    })
+    return { server, seen }
+  }
+
+  // --- local: agent address answers with Magpie's own on-demand pair ---
+  const localHub = makeHub(() => ['find_tools', 'call_tool'])
+  await new Promise<void>((resolve) => localHub.server.listen(0, '127.0.0.1', resolve))
+  t.after(() => localHub.server.close())
+  const localAddr = localHub.server.address()
+  assert.ok(localAddr && typeof localAddr === 'object')
+  const localOrigin = `http://127.0.0.1:${localAddr.port}/v1`
+
+  __resetSettingsRoutes()
+  const localCtx = stubContext()
+  apply(localCtx, { baseUrl: localOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-local-')) })
+  await settled()
+  const onLocal = await callRoute(localCtx.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  assert.equal((onLocal.payload as { ok: boolean }).ok, true)
+  await settled()
+  // Asked the agent address, and passed Magpie's pair through unchanged.
+  assert.ok(localHub.seen.some((path) => path === '/mcp/magpie/hub/dsh'), `expected the agent address, saw ${localHub.seen.join(', ')}`)
+  assert.deepEqual([...localCtx.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
+  const localView = (onLocal.payload as { value: Record<string, unknown> }).value
+  assert.equal(localView.mcpMode, 'passthrough')
+  assert.equal(localView.mcpAddress, 'agent')
+
+  // --- remote: agent address is never used; on-demand is built here ---
+  const remoteHub = makeHub((path) => (path === '/mcp/magpie/hub' ? Array.from({ length: 15 }, (_, i) => `s__t${i}`) : []))
+  await new Promise<void>((resolve) => remoteHub.server.listen(0, '0.0.0.0', resolve))
+  t.after(() => remoteHub.server.close())
+  const remoteAddr = remoteHub.server.address()
+  assert.ok(remoteAddr && typeof remoteAddr === 'object')
+  // Reach it through the machine's LAN address so it is not loopback.
+  const lan = Object.values(os.networkInterfaces())
+    .flat()
+    .find((entry) => entry !== undefined && entry.family === 'IPv4' && !entry.internal)
+  assert.ok(lan, 'a non-loopback IPv4 address is needed for the remote half')
+  const remoteOrigin = `http://${lan.address}:${remoteAddr.port}/v1`
+
+  __resetSettingsRoutes()
+  const remoteCtx = stubContext()
+  apply(remoteCtx, { baseUrl: remoteOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-remote-')) })
+  await settled()
+  const onRemote = await callRoute(remoteCtx.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  await settled()
+  // 15 tools → our own on-demand pair, never the agent path.
+  assert.deepEqual([...remoteCtx.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
+  assert.ok(!remoteHub.seen.some((path) => path.startsWith('/mcp/magpie/hub/dsh')), `remote must not use the agent address, saw ${remoteHub.seen.join(', ')}`)
+  const remoteView = (onRemote.payload as { value: Record<string, unknown> }).value
+  assert.equal(remoteView.mcpMode, 'on-demand')
+  assert.equal(remoteView.mcpAddress, 'all')
 })

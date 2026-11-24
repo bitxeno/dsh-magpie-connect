@@ -1,6 +1,6 @@
 import { ModelCatalog } from './adapter/catalog.ts';
 import { type DshMagpieConnectConfig } from './config.ts';
-import { SettingsStore, type EffectiveSearchSettings } from './settings.ts';
+import { SettingsStore, type EffectiveSearchSettings, type McpServerStatusView } from './settings.ts';
 /**
  * dsh-magpie-connect DSH cordis plugin entry.
  *
@@ -59,6 +59,11 @@ export declare const TRACE_API = "/api/magpie-trace";
 export declare const ICON_API = "/api/magpie-icon";
 /** 设置页网页搜索测试路由（在 Host 侧使用当前表单或已保存凭据执行一次试探搜索）。 */
 export declare const SEARCH_TEST_API = "/api/magpie-search-test";
+/**
+ * 设置页 MCP Hub 测试路由：在 Host 侧用当前表单或已保存凭据直接对
+ * `/mcp/magpie/hub` 做一次 initialize + tools/list 探测，不注册任何实例。
+ */
+export declare const MCP_TEST_API = "/api/magpie-mcp-test";
 /** DSH `web` 服务与本插件搜索提供方的绑定状态。 */
 export interface WebSearchBindingState {
     registered: boolean;
@@ -77,6 +82,8 @@ export interface SettingsBackend {
     patchSearch: EffectiveSearchSettings;
     searchTimeoutMs: number;
     providerId: string;
+    /** Hub agent segment for the MCP test route ('' = all-apps). */
+    mcpAgent: string;
     effective: () => {
         baseUrl: string;
         apiKey: string;
@@ -86,6 +93,26 @@ export interface SettingsBackend {
     readWebSearchState: () => WebSearchBindingState;
     setWebSearchActive: (active: boolean) => Promise<void>;
     restoreWebSearchProvider: (provider: string | undefined) => Promise<void>;
+    readMcpState: () => McpBindingState;
+    /** Re-align the MCP tool set now (awaits the tools/list). */
+    reconcileMcp: () => Promise<void>;
+}
+/** Magpie MCP 工具集在 DSH 中的绑定状态。 */
+export interface McpBindingState {
+    /** 当前环境是否加载了 `ctx.tools`（可注册工具）。 */
+    available: boolean;
+    /** 是否已注册至少一个 Magpie 工具（已勾选、已配置且已拉到工具清单）。 */
+    registered: boolean;
+    /** 当前暴露方式：直连、插件按需，或透传 Magpie 自己的按需对。 */
+    mode?: 'direct' | 'on-demand' | 'passthrough';
+    /** 实际使用的 Hub 地址：`agent`（本地，Magpie 按需）或 `all`（全应用）。 */
+    address?: 'agent' | 'all';
+    /** Hub 当前列出的工具数（决定是否进入按需模式）。 */
+    hubToolCount?: number;
+    /** 已注册到 DSH 的工具数（按需模式下为 2）。 */
+    registeredCount?: number;
+    /** 当前连接状态（未注册时省略）。 */
+    status?: McpServerStatusView;
 }
 interface ModelRow {
     /** Route id, used by the allowlist, requests and session history. */

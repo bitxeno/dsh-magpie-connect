@@ -14,6 +14,7 @@
 - **图片识别** — 网关声明支持图片的模型可以直接发图。
 - **思考档位** — 网关支持的思考档位（含 `none`、`ultra`）原样出现在选择器里。
 - **网页搜索切换** — 注册为 DSH 的独立搜索提供方（复用已保存的网关地址与 API Key），在设置页一键切换 DSH 的 `web_search` 到 Magpie；默认沿用 Magpie 自身的代搜模型或 Search API 配置（无需在资源库开启 MCP 路由），也支持指定 Magpie 模型（Messages API）并随时在页面切换，无需手改 `cordis.patch.yml`。
+- **MCP 服务接入（可选，默认关闭）** — 在设置页勾选后，把 Magpie 的 MCP Hub（`/mcp/magpie/hub`：网页搜索、浏览器、图像等工具，以及资源库中勾选的服务）接入 DSH，作为 `mcp__magpie__<tool>` 原生工具供模型调用。**默认不启动**：只有勾选并保存后才会建立连接，复用上方已保存的地址与 Key，取消勾选即时注销；卡片与网页搜索、界面增强一样可收缩/展开。
 - **路由浮窗** — 输入框右侧的 Magpie 图标，桌面悬停（手机端点按）即显示网关路由的压缩视图：当前会话最近一次请求走了哪条路由、命中/避开了哪些账号/模型及耗时；无会话时回退显示整份 trace 里最新的一条路由。数据由插件在 Host 侧用已保存的 Key 读取（`/api/magpie-trace`，聚合网关的 `/v1/magpie/quotas`、`/v1/magpie/concurrency`、`/v1/magpie/route` 与 Web 的 `/api/gateway/trace`），浏览器不接触 Key；账号持有人只以首字符形式出现在页面上。
 - **完整路由组详情（可选）** — 在设置页填入 Magpie Web Key 后，浮窗会从 Magpie Web 的完整 trace 读取当前会话的路由组、嵌套子路由组（如 `Hy4 auto/hy4free`、`GPT-6 Luna auto/gpt-6-luna`）、候选账号、逐次尝试、限流/失效原因与恢复时间，并通过 Host 同源代理显示供应商图标；Web Key 仅保存在 Host 的 `settings.json`（文件权限 `0600`），设置页不回显。未配置或 Web Key 失效时自动回退到简化视图。
 
@@ -98,10 +99,38 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
   - **指定 Magpie 模型（Messages API）** — 请求 `{baseUrl}/messages` 并附带 `web_search_20250305` 工具，可直接从网关模型列表中随时切换搜索模型，或手动填写自定义模型 ID。
 - 点击 **测试搜索** — 立即验证当前搜索方式与模型是否可用。
 
+### 第四步：接入 Magpie MCP 服务（可选）
+
+Magpie 网关把它资源库里的 MCP 服务聚合成一个 MCP 服务器。在 **设置 → Magpie 网关 → MCP 服务** 中勾选 **在 DSH 中启用 Magpie MCP Hub** 并保存，插件就会通过 DSH 的 `ctx.tools` 把这些工具接进来。
+
+- **默认不启动**：不勾选就不会对网关发起任何 MCP 连接，启动 DSH 时始终保持关闭。只有勾选并「保存」后才建立连接；取消勾选即时注销。
+- **按地址自动选路**（见下表）：本地网关（`127.0.0.1` / `localhost`）走 `/mcp/magpie/hub/{agent}`，**由 Magpie 自己按需加载**；远程网关（如 `api.lan`）走 `/mcp/magpie/hub`（全应用），**由插件按需加载**。
+- **按需加载规则**：`tools/list` 返回的恰好是 `find_tools` + `call_tool` → 直接透传 Magpie 的定义（连它写在 `find_tools` 说明里的服务目录一起保留）；否则工具 **超过 10 个**时插件只注册这两个工具（先查后跑，其余 schema 不进每轮请求），**10 个以内**则逐个注册为 `mcp__magpie__<server>__<tool>`。
+- **本地回退**：本地 agent 地址若列出 0 个工具（说明资源库没给该 agent 勾选服务），自动改用全应用地址，避免"连上了但没有工具"。
+- **复用同一份凭据**：使用上方已保存的 API 地址与 Key（`Authorization: Bearer`）；改了地址或 Key 会按新值自动重刷工具集，无需重启。
+- **测试 MCP**：点「测试 MCP」会用当前填写的地址与 Key 直接在 Host 侧探测**与正式注册相同的地址**，不保存、也不注册任何工具。
+- 卡片标题右侧显示状态，正文显示当前方式（直连 N 个工具 / 插件按需 / Magpie 按需）。
+
+| API 地址 | Hub 地址 | 谁做按需加载 | `find_tools` 的服务目录 |
+| --- | --- | --- | --- |
+| `127.0.0.1`、`localhost`、`::1`、`127.0.0.0/8` | `/mcp/magpie/hub/dsh`（或 `mcpAgent` 指定的 agent） | **Magpie**（`hubOnDemand`） | Magpie 提供，原样透传 |
+| 其它（局域网 / 域名 / 远程） | `/mcp/magpie/hub` | **插件**（`>10` 个工具时） | 插件按工具清单生成 |
+
+> 为什么这样分：Magpie 的 agent 列表只包含**运行 Magpie 那台机器上检测到的工具**。本地 Magpie 能认出 DSH（`dsh`），agent 地址因此可用，且它自带的按需加载会把服务目录写进 `find_tools` 说明；而路由器上的 Magpie 永远看不到 DSH，agent 地址只会列出 0 个工具，所以远程只能走全应用地址 + 插件自己按需。
+
+> 设置页卡片顺序：连接 → 界面增强 → 网页搜索 → MCP 服务 → 模型列表。
+
+**如何确认 MCP 已生效**
+
+1. 勾选并保存后，本卡片标题右侧变为 **已开启**，正文显示 **已连接 · 已注册 N 个工具**（≤10）或 **已连接 · 按需加载（Hub 共 M 个工具）**（>10）。
+2. ≤10 个工具时逐个是 `mcp__magpie__<server>__<tool>`；>10 个时为 `mcp__magpie__find_tools` / `mcp__magpie__call_tool`（先 `find_tools` 查，再 `call_tool` 跑）。让模型调用其一，或查看 DSH 的工具列表即可。
+3. 想先不保存就验证连通性，点 **测试 MCP** 即可。
+
 ### 什么时候需要保存
 
 - **地址和 Key**：点「保存」才生效。
 - **网页搜索**：开关即时生效，切换搜索方式或模型后点「保存搜索设置」即可生效。
+- **MCP 服务**：勾选/取消即时生效，保存后 Hub 才启动或注销。
 - **模型增删**：**自动保存**，不用点任何按钮。
 
 ## 常见问题
@@ -191,6 +220,8 @@ Key 无效、网关不通）不会清空本地目录，避免把选择器误清�
 | `searchModel` | `''` | `'model'` 搜索模式下使用的 Magpie 模型 ID。 |
 | `searchMaxUses` | `5` | `'model'` 搜索模式下单次请求最大 `web_search` 使用次数（1–20）。 |
 | `searchTimeoutMs` | `120000` | 单次网页搜索请求的总超时（毫秒）。 |
+| `mcpToolCallTimeoutMs` | `120000` | 接入 DSH 的 Magpie MCP Hub 的单次工具调用超时（毫秒）。 |
+| `mcpAgent` | `''` | Hub URL 里的 agent 段。**本地网关**下默认用 `dsh`（Magpie 内置的 DSH agent，资源库显示为 DeepSeek Harness），从而由 Magpie 自己按需加载；填其它 id 可改用别的 agent。**远程网关**下忽略此项，固定走全应用地址。 |
 
 优先级：设置页 > `cordis.patch.yml` > 默认值。设置页只覆盖你保存过的字段。
 

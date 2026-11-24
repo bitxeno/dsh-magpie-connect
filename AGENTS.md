@@ -12,11 +12,7 @@ is documented here because it spans three files that must move together.
    GitHub Release body and the plugin market's "what changed" dialog; see
    [scripts/release-notes.mjs](scripts/release-notes.mjs) for the matching
    rules). A version with no section is not an error: the release ships with
-   the install snippet alone. Write bullet points **for users**: say what they
-   get and why it matters, not how it is implemented — no file names, symbols,
-   API paths, `Promise.all`/type/field names, or before/after code talk. Keep
-   each item one or two plain sentences; the reader is a plugin user, not the
-   diff (see the entries under `## v0.8.0` for the intended granularity).
+   the install snippet alone. Follow the rules in **Changelog rules** below.
 2. Bump `version` in **both** `package.json` and `dsh.plugin.json` to the same
    value (the workflow fails on a mismatch). A version carrying a `-` (e.g.
    `0.7.0-rc.1`) is tagged as a prerelease and published to npm's `next`
@@ -46,6 +42,23 @@ whatever a partial failure left):
 commit CI checked out, so it always matches the published lib/, release body
 and npm tarball. To release an older commit, check out a branch that carries
 its version numbers and dispatch the workflow there.
+
+## Changelog rules
+
+Readers are plugin users deciding whether to update. Write what changed **for
+them**, never how it works.
+
+- **One bullet per capability.** A feature is one bullet no matter how many
+  commits it took. A release adding one feature is one bullet — two at most.
+- **Cut anything they can see themselves**: buttons, defaults, tooltips, cards
+  moving. Also cut thresholds, numbers, and how it decides between cases.
+- **Never name** files, symbols, API paths, protocols, or internal concepts.
+  If explaining it needs a table or a code span, you are describing code.
+- **`### 修复` is only for bugs in a shipped version.** Confirm the last tag
+  actually had that code (`git show v<last>:src/…`); otherwise it is part of
+  the new feature, not a fix.
+- **Self-check:** one to three plain sentences per bullet, and no word from the
+  paragraph above. See `## v0.8.0` for the intended size.
 
 ## Conventional commits
 

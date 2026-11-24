@@ -67,6 +67,14 @@ test('normalizePageSettings accepts the Web Key and refuses non-strings', () => 
   assert.throws(() => normalizePageSettings({ webKey: 7 }), /non-empty string/)
 })
 
+test('normalizePageSettings accepts the MCP toggle and refuses non-booleans', () => {
+  assert.deepEqual(normalizePageSettings({ mcpEnabled: true }), { mcpEnabled: true })
+  assert.deepEqual(normalizePageSettings({ mcpEnabled: false }), { mcpEnabled: false })
+  // Absent stays absent so an old document reads as "off" and never starts the hub.
+  assert.equal('mcpEnabled' in normalizePageSettings({}), false)
+  assert.throws(() => normalizePageSettings({ mcpEnabled: 'yes' }), /boolean/)
+})
+
 test('normalizePageSettings 校验并规范化网页搜索字段，resolveEffectiveSearchSettings 按字段覆盖', () => {
   assert.deepEqual(
     normalizePageSettings({ searchMode: 'model', searchModel: '  codex/gpt-5.4-mini  ', searchMaxUses: 8 }),

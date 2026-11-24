@@ -4,7 +4,10 @@ import { NS, text, useLocaleRevision } from './i18n.ts'
 import { ModelListEditor, type CandidateRow, type ModelRow } from './model-list.tsx'
 import { createWriteQueue } from './write-queue.ts'
 import { PENDING_RETRY_DELAY_MS, shouldRetryPending, type SnapshotStatus } from './load-retry.ts'
-import type { MagpieSearchMode, MagpieSettingsView } from '../settings.ts'
+import type { MagpieSearchMode, MagpieSettingsView, McpServerStatusView } from '../settings.ts'
+
+/** 「测试 MCP」路由（与 Host 侧 MCP_TEST_API 一致）。 */
+const MCP_TEST_API = '/api/magpie-mcp-test'
 
 export const PLUGIN_VERSION: string = __PLUGIN_VERSION__
 
@@ -158,6 +161,11 @@ async function saveSearchSettings(payload: {
   return (await request('/api/magpie-settings', 'POST', payload)) as MagpieSettingsView
 }
 
+/** 单独保存 MCP Hub 开关（与连接凭据隔离，不会误提交编辑中的地址或 Key）。 */
+async function saveMcpEnabled(enabled: boolean): Promise<MagpieSettingsView> {
+  return (await request('/api/magpie-settings', 'POST', { mcpEnabled: enabled })) as MagpieSettingsView
+}
+
 /** Props of {@link CollapsibleCard}. */
 interface CollapsibleCardProps {
   /** Card heading; the only thing visible while collapsed. */
@@ -229,6 +237,25 @@ export function MagpieSettings(): unknown {
   const [enhancementsOpen, setEnhancementsOpen] = useState(false)
   /** 网页搜索同样是可选功能，默认收缩，让连接配置与模型列表先被看到。 */
   const [searchOpen, setSearchOpen] = useState(false)
+  /** MCP 服务默认关闭且默认收缩——不勾选保存就绝不启动。 */
+  const [mcpOpen, setMcpOpen] = useState(false)
+  const [mcpEnabled, setMcpEnabled] = useState(false)
+  const [mcpAvailable, setMcpAvailable] = useState(false)
+  const [mcpRegistered, setMcpRegistered] = useState(false)
+  const [mcpStatus, setMcpStatus] = useState<McpServerStatusView | undefined>(undefined)
+  const [mcpMode, setMcpMode] = useState<'direct' | 'on-demand' | 'passthrough' | undefined>(undefined)
+  const [mcpAddress, setMcpAddress] = useState<'agent' | 'all' | undefined>(undefined)
+  const [mcpHubToolCount, setMcpHubToolCount] = useState<number | undefined>(undefined)
+  const [mcpRegisteredCount, setMcpRegisteredCount] = useState<number | undefined>(undefined)
+  const [mcpServerError, setMcpServerError] = useState<string | undefined>(undefined)
+  const [mcpBusy, setMcpBusy] = useState(false)
+  const [mcpNotice, setMcpNotice] = useState<string | undefined>(undefined)
+  const [mcpError, setMcpError] = useState<string | undefined>(undefined)
+  /** 「测试 MCP」按钮的状态与结果（对 Hub 做一次 initialize+tools/list 探测）。 */
+  const [mcpTestBusy, setMcpTestBusy] = useState(false)
+  const [mcpTestResult, setMcpTestResult] = useState<
+    { ok: true; toolCount: number; hubOff?: boolean; toolNames: string[] } | { ok: false; error: string } | undefined
+  >(undefined)
   /** 网页搜索相关设置与 DSH 绑定状态。 */
   const [searchMode, setSearchMode] = useState<MagpieSearchMode>('mcp')
   const [searchModel, setSearchModel] = useState('')
@@ -322,6 +349,15 @@ export function MagpieSettings(): unknown {
       setSearchRegistered(settings.searchRegistered === true)
       setSearchSwitchable(settings.searchSwitchable === true)
       setActiveSearchProvider(settings.activeSearchProvider)
+      setMcpEnabled(settings.mcpEnabled === true)
+      setMcpAvailable(settings.mcpAvailable === true)
+      setMcpRegistered(settings.mcpRegistered === true)
+      setMcpStatus(settings.mcpStatus)
+      setMcpMode(settings.mcpMode)
+      setMcpAddress(settings.mcpAddress)
+      setMcpHubToolCount(settings.mcpHubToolCount)
+      setMcpRegisteredCount(settings.mcpRegisteredCount)
+      setMcpServerError(settings.mcpError)
       setModels(listed)
       setLoaded(true)
       // The Host answers before its catalog has warmed up, and the first
@@ -424,9 +460,77 @@ export function MagpieSettings(): unknown {
     setSearchRegistered(saved.searchRegistered === true)
     setSearchSwitchable(saved.searchSwitchable === true)
     setActiveSearchProvider(saved.activeSearchProvider)
+    syncMcpState(saved)
   }
 
-  /** 切换 DSH 的 `web.searchProvider` 开关；开启时顺带提交当前选中的模式与模型。 */
+  /** 将服务端返回的最新 MCP Hub 状态同步到本地 state。 */
+  const syncMcpState = (saved: MagpieSettingsView): void => {
+    setMcpEnabled(saved.mcpEnabled === true)
+    setMcpAvailable(saved.mcpAvailable === true)
+    setMcpRegistered(saved.mcpRegistered === true)
+    setMcpStatus(saved.mcpStatus)
+    setMcpMode(saved.mcpMode)
+    setMcpAddress(saved.mcpAddress)
+    setMcpHubToolCount(saved.mcpHubToolCount)
+    setMcpRegisteredCount(saved.mcpRegisteredCount)
+    setMcpServerError(saved.mcpError)
+  }
+
+  /**
+   * 勾选/取消 MCP Hub。开启是一个明确的动作（像网页搜索开关），取消则只提交
+   * `mcpEnabled:false`，不会碰地址/Key 字段。
+   */
+  const toggleMcpEnabled = (next: boolean): void => {
+    setMcpBusy(true)
+    setMcpError(undefined)
+    setMcpNotice(undefined)
+    saveMcpEnabled(next).then(
+      (saved) => {
+        syncMcpState(saved)
+        setMcpNotice(text('mcpSaved'))
+      },
+      (cause: unknown) => {
+        setMcpError(cause instanceof Error ? cause.message : String(cause))
+        // 保存失败时把开关拨回真实状态。
+        setMcpEnabled((previous) => !previous)
+      },
+    ).finally(() => {
+      setMcpBusy(false)
+    })
+  }
+
+  /**
+   * 测试 Hub 是否可达：用当前表单（或已保存）的地址与 Key 直接在 Host 侧对
+   * `/mcp/magpie/hub` 做一次 initialize + tools/list，不注册任何实例。
+   */
+  const testMcp = (): void => {
+    setMcpTestBusy(true)
+    setMcpTestResult(undefined)
+    setMcpError(undefined)
+    setMcpNotice(undefined)
+    void (async () => {
+      try {
+        const result = (await request(MCP_TEST_API, 'POST', {
+          baseUrl,
+          ...(apiKey.trim() === '' ? {} : { apiKey }),
+        })) as { ok: boolean; toolCount: number; toolNames?: string[]; hubOff?: boolean; error?: string }
+        if (result.ok === true) {
+          setMcpTestResult({
+            ok: true,
+            toolCount: result.toolCount,
+            ...(result.hubOff === true ? { hubOff: true } : {}),
+            toolNames: result.toolNames ?? [],
+          })
+        } else {
+          setMcpTestResult({ ok: false, error: result.error ?? text('mcpTestFailedNoMessage') })
+        }
+      } catch (cause) {
+        setMcpTestResult({ ok: false, error: cause instanceof Error ? cause.message : String(cause) })
+      } finally {
+        setMcpTestBusy(false)
+      }
+    })()
+  }
   const toggleSearchActive = (nextActive: boolean): void => {
     setSearchBusy('saving')
     setSearchError(undefined)
@@ -510,6 +614,7 @@ export function MagpieSettings(): unknown {
       setSearchRegistered(saved.searchRegistered === true)
       setSearchSwitchable(saved.searchSwitchable === true)
       setActiveSearchProvider(saved.activeSearchProvider)
+      syncMcpState(saved)
       // Never keep typed secrets in component state after they are stored.
       setApiKey('')
       // Adopt what the server stored, without queueing a write of its own —
@@ -583,6 +688,47 @@ export function MagpieSettings(): unknown {
         ? { text: text('statusOn'), on: true }
         : { text: text('statusOff') }
 
+  /** MCP 卡片的连接目标是否就绪（地址+Key 都在）——决定能否勾选启用。 */
+  const mcpReadyToEnable = hasApiKey && baseUrl.trim() !== ''
+  /** MCP 工具集的连接状态文案（更细，显示在卡片正文）。 */
+  const mcpConnectionLine = (): string => {
+    if (!mcpRegistered) return text('mcpHintDisabled')
+    switch (mcpStatus?.state) {
+      case 'connected':
+        // `passthrough` means a local Magpie answered with its own find_tools /
+        // call_tool pair, so on-demand is Magpie's doing, not ours.
+        if (mcpMode === 'on-demand') return text('mcpModeOnDemand', { hub: mcpHubToolCount ?? 0 })
+        if (mcpMode === 'passthrough') return text('mcpModePassthrough')
+        return text('mcpModeDirect', { count: mcpRegisteredCount ?? mcpStatus.toolCount ?? 0 })
+      case 'connecting':
+        return text('mcpStatusConnecting')
+      case 'reconnecting':
+        return text('mcpStatusReconnecting')
+      case 'failed':
+        return mcpStatus.lastError !== undefined
+          ? text('mcpStatusFailed', { message: mcpStatus.lastError })
+          : text('mcpStatusFailedNoMessage')
+      case 'disabled':
+        return text('mcpStatusDisabled')
+      default:
+        return text('mcpStatusUnknown')
+    }
+  }
+  /** MCP 标题右侧的一句话状态。 */
+  const mcpCardStatus: { text: string; on?: boolean } | undefined = !loaded
+    ? undefined
+    : !mcpAvailable
+      ? { text: text('statusUnavailable') }
+      : !mcpEnabled
+        ? { text: text('statusOff') }
+        : !mcpRegistered
+          ? { text: text('statusUnset') }
+          : mcpStatus?.state === 'connected'
+            ? { text: text('statusOn'), on: true }
+            : mcpStatus?.state === 'failed'
+              ? { text: text('statusUnavailable') }
+              : { text: text('statusOn'), on: true }
+
   return (
     <section style={css.section}>
       <header style={css.header}>
@@ -637,6 +783,49 @@ export function MagpieSettings(): unknown {
         {loaded && incomplete ? <p style={css.hint}>{text('notConfigured')}</p> : null}
       </div>
 
+      <CollapsibleCard
+        title={text('enhancements')}
+        status={enhancementsStatus?.text}
+        statusOn={enhancementsStatus?.on}
+        open={enhancementsOpen}
+        onToggle={() => setEnhancementsOpen((open) => !open)}
+      >
+        <div style={css.field}>
+          <span style={css.label}>{text('webKey')}</span>
+          <Input type="password" value={webKey} placeholder={text(hasWebKey ? 'webKeySavedPlaceholder' : 'webKeyPlaceholder')} disabled={working || webKeyStatus === 'saving'} onChange={(event: { currentTarget: { value: string } }) => setWebKey(event.currentTarget.value)} />
+          <p style={css.hint}>{text('webKeyHint')}</p>
+        </div>
+        <label style={css.switchRow}>
+          <input
+            type="checkbox"
+            style={css.switchBox}
+            checked={showComposerIcon}
+            disabled={iconStatus === 'saving' || !hasWebKey}
+            onChange={(event: { currentTarget: { checked: boolean } }) => applyShowComposerIcon(event.currentTarget.checked)}
+          />
+          <span style={css.switchText}>
+            <span style={css.switchLabel}>{text('composerIcon')}</span>
+            <span style={css.switchHint}>{hasWebKey ? text('composerIconHint') : text('composerIconNeedsWebKey')}</span>
+          </span>
+        </label>
+        <div style={css.row}>
+          <Button variant="outline" disabled={working || webKeyStatus === 'saving' || webKey.trim() === ''} onClick={() => applyWebKey()}>
+            {webKeyStatus === 'saving' ? text('saving') : text('save')}
+          </Button>
+          {webKeyStatus === 'saved' ? <span style={css.ok}>{text('webKeySaved')}</span> : null}
+        </div>
+        {iconStatus === 'saved' ? <p style={css.ok}>{text('composerIconSaved')}</p> : null}
+        {webKeyError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {text('composerIconFailed', { message: webKeyError })}
+          </p>
+        )}
+        {iconError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {text('composerIconFailed', { message: iconError })}
+          </p>
+        )}
+      </CollapsibleCard>
       <CollapsibleCard
         title={text('webSearch')}
         status={searchStatus?.text}
@@ -746,49 +935,68 @@ export function MagpieSettings(): unknown {
         )}
         {searchNotice === undefined ? null : <p style={css.ok}>{searchNotice}</p>}
       </CollapsibleCard>
-
       <CollapsibleCard
-        title={text('enhancements')}
-        status={enhancementsStatus?.text}
-        statusOn={enhancementsStatus?.on}
-        open={enhancementsOpen}
-        onToggle={() => setEnhancementsOpen((open) => !open)}
+        title={text('mcp')}
+        status={mcpCardStatus?.text}
+        statusOn={mcpCardStatus?.on}
+        open={mcpOpen}
+        onToggle={() => setMcpOpen((open) => !open)}
       >
-        <div style={css.field}>
-          <span style={css.label}>{text('webKey')}</span>
-          <Input type="password" value={webKey} placeholder={text(hasWebKey ? 'webKeySavedPlaceholder' : 'webKeyPlaceholder')} disabled={working || webKeyStatus === 'saving'} onChange={(event: { currentTarget: { value: string } }) => setWebKey(event.currentTarget.value)} />
-          <p style={css.hint}>{text('webKeyHint')}</p>
-        </div>
+        <p style={css.hint}>{text('mcpIntro')}</p>
         <label style={css.switchRow}>
           <input
             type="checkbox"
             style={css.switchBox}
-            checked={showComposerIcon}
-            disabled={iconStatus === 'saving' || !hasWebKey}
-            onChange={(event: { currentTarget: { checked: boolean } }) => applyShowComposerIcon(event.currentTarget.checked)}
+            checked={mcpEnabled}
+            disabled={!loaded || mcpBusy || !mcpAvailable || (!mcpEnabled && !mcpReadyToEnable)}
+            onChange={(event: { currentTarget: { checked: boolean } }) => toggleMcpEnabled(event.currentTarget.checked)}
           />
           <span style={css.switchText}>
-            <span style={css.switchLabel}>{text('composerIcon')}</span>
-            <span style={css.switchHint}>{hasWebKey ? text('composerIconHint') : text('composerIconNeedsWebKey')}</span>
+            <span style={css.switchLabel}>{text('mcpToggle')}</span>
+            <span style={css.switchHint}>
+              {!mcpAvailable
+                ? text('mcpUnavailable')
+                : !mcpEnabled && !mcpReadyToEnable
+                  ? text('mcpNeedsCredentials')
+                  : mcpConnectionLine()}
+            </span>
           </span>
         </label>
+        {mcpEnabled && mcpServerError !== undefined ? (
+          <p role="alert" style={css.error}>
+            {text('mcpStatusFailed', { message: mcpServerError })}
+          </p>
+        ) : null}
         <div style={css.row}>
-          <Button variant="outline" disabled={working || webKeyStatus === 'saving' || webKey.trim() === ''} onClick={() => applyWebKey()}>
-            {webKeyStatus === 'saving' ? text('saving') : text('save')}
+          <Button
+            variant="outline"
+            disabled={!loaded || mcpTestBusy || mcpBusy || incomplete}
+            onClick={() => testMcp()}
+          >
+            {mcpTestBusy ? text('mcpTesting') : text('mcpTest')}
           </Button>
-          {webKeyStatus === 'saved' ? <span style={css.ok}>{text('webKeySaved')}</span> : null}
+          {mcpTestResult?.ok === true ? (
+            <span style={css.ok}>
+              {mcpTestResult.hubOff === true
+                ? text('mcpTestHubOff')
+                : text('mcpTestOk', { count: mcpTestResult.toolCount })}
+            </span>
+          ) : null}
         </div>
-        {iconStatus === 'saved' ? <p style={css.ok}>{text('composerIconSaved')}</p> : null}
-        {webKeyError === undefined ? null : (
+        {mcpTestResult?.ok === true && mcpTestResult.hubOff !== true && mcpTestResult.toolNames.length > 0 ? (
+          <p style={css.hint}>{text('mcpTestTools', { names: mcpTestResult.toolNames.slice(0, 8).join(', ') })}</p>
+        ) : null}
+        {mcpTestResult?.ok === false ? (
           <p role="alert" style={css.error}>
-            {text('composerIconFailed', { message: webKeyError })}
+            {text('mcpTestFailed', { message: mcpTestResult.error })}
+          </p>
+        ) : null}
+        {mcpError === undefined ? null : (
+          <p role="alert" style={css.error}>
+            {mcpError}
           </p>
         )}
-        {iconError === undefined ? null : (
-          <p role="alert" style={css.error}>
-            {text('composerIconFailed', { message: iconError })}
-          </p>
-        )}
+        {mcpNotice === undefined ? null : <p style={css.ok}>{mcpNotice}</p>}
       </CollapsibleCard>
 
       <ModelListEditor

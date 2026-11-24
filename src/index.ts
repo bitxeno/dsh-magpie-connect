@@ -30,7 +30,23 @@ import {
   resolveEffectiveSearchSettings,
   type EffectiveSearchSettings,
   type MagpieSettingsView,
+  type McpServerStatusView,
 } from './settings.ts'
+import {
+  DEFAULT_MCP_AGENT,
+  MCP_ON_DEMAND_OVER,
+  buildHubRegistration,
+  hubFingerprint,
+  isLocalGateway,
+  listHubTools,
+  resolveHubAgent,
+  normalizeMcpAgent,
+  probeMagpieHub,
+  toStatusView,
+  type HubRegistration,
+  type RawMcpTool,
+} from './mcp.ts'
+import { MagpieToolRegistrar, type DshToolService } from './mcp-tools.ts'
 
 /**
  * dsh-magpie-connect DSH cordis plugin entry.
@@ -89,6 +105,11 @@ export const TRACE_API = '/api/magpie-trace'
 export const ICON_API = '/api/magpie-icon'
 /** 设置页网页搜索测试路由（在 Host 侧使用当前表单或已保存凭据执行一次试探搜索）。 */
 export const SEARCH_TEST_API = '/api/magpie-search-test'
+/**
+ * 设置页 MCP Hub 测试路由：在 Host 侧用当前表单或已保存凭据直接对
+ * `/mcp/magpie/hub` 做一次 initialize + tools/list 探测，不注册任何实例。
+ */
+export const MCP_TEST_API = '/api/magpie-mcp-test'
 
 /**
  * How long a settings save waits for the catalog re-read it triggered.
@@ -101,6 +122,9 @@ const SAVE_REFRESH_WAIT_MS = 5000
 
 /** 设置页「测试搜索」按钮的上限超时（需低于浏览器 30s 请求上限，确保返回明确错误）。 */
 const SEARCH_TEST_TIMEOUT_MS = 25_000
+
+/** 设置页「测试 MCP」按钮的上限超时（同样低于浏览器 30s 上限）。 */
+const MCP_TEST_TIMEOUT_MS = 20_000
 
 /** DSH `web` 服务与本插件搜索提供方的绑定状态。 */
 export interface WebSearchBindingState {
@@ -118,12 +142,35 @@ export interface SettingsBackend {
   patchSearch: EffectiveSearchSettings
   searchTimeoutMs: number
   providerId: string
+  /** Hub agent segment for the MCP test route ('' = all-apps). */
+  mcpAgent: string
   effective: () => { baseUrl: string; apiKey: string }
   effectiveSearch: () => EffectiveSearchSettings
   applyPageSettings: () => void
   readWebSearchState: () => WebSearchBindingState
   setWebSearchActive: (active: boolean) => Promise<void>
   restoreWebSearchProvider: (provider: string | undefined) => Promise<void>
+  readMcpState: () => McpBindingState
+  /** Re-align the MCP tool set now (awaits the tools/list). */
+  reconcileMcp: () => Promise<void>
+}
+
+/** Magpie MCP 工具集在 DSH 中的绑定状态。 */
+export interface McpBindingState {
+  /** 当前环境是否加载了 `ctx.tools`（可注册工具）。 */
+  available: boolean
+  /** 是否已注册至少一个 Magpie 工具（已勾选、已配置且已拉到工具清单）。 */
+  registered: boolean
+  /** 当前暴露方式：直连、插件按需，或透传 Magpie 自己的按需对。 */
+  mode?: 'direct' | 'on-demand' | 'passthrough'
+  /** 实际使用的 Hub 地址：`agent`（本地，Magpie 按需）或 `all`（全应用）。 */
+  address?: 'agent' | 'all'
+  /** Hub 当前列出的工具数（决定是否进入按需模式）。 */
+  hubToolCount?: number
+  /** 已注册到 DSH 的工具数（按需模式下为 2）。 */
+  registeredCount?: number
+  /** 当前连接状态（未注册时省略）。 */
+  status?: McpServerStatusView
 }
 
 type FetchRegister = (route: {
@@ -288,6 +335,7 @@ function settingsView(backend: SettingsBackend): MagpieSettingsView {
   const endpoint = resolveEffectiveEndpoint(backend.patchEndpoint, page)
   const search = resolveEffectiveSearchSettings(backend.patchSearch, page)
   const binding = backend.readWebSearchState()
+  const mcp = backend.readMcpState()
   return {
     baseUrl: endpoint.baseUrl,
     hasApiKey: endpoint.apiKey !== '',
@@ -295,6 +343,15 @@ function settingsView(backend: SettingsBackend): MagpieSettingsView {
     enabledModels: page.enabledModels,
     inheritedModels: page.enabledModels === undefined,
     showComposerIcon: page.showComposerIcon !== false,
+    mcpEnabled: page.mcpEnabled === true,
+    mcpAvailable: mcp.available,
+    mcpRegistered: mcp.registered,
+    ...(mcp.mode !== undefined ? { mcpMode: mcp.mode } : {}),
+    ...(mcp.address !== undefined ? { mcpAddress: mcp.address } : {}),
+    ...(mcp.hubToolCount !== undefined ? { mcpHubToolCount: mcp.hubToolCount } : {}),
+    ...(mcp.registeredCount !== undefined ? { mcpRegisteredCount: mcp.registeredCount } : {}),
+    ...(mcp.status !== undefined ? { mcpStatus: mcp.status } : {}),
+    ...(mcp.status?.state === 'failed' && mcp.status.lastError !== undefined ? { mcpError: mcp.status.lastError } : {}),
     searchMode: search.mode,
     searchModel: search.model,
     searchMaxUses: search.maxUses,
@@ -376,6 +433,17 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     ) {
       throw new Error('dsh-magpie-connect: searchModel is required when searchMode is "model"')
     }
+    // 勾选启用 MCP Hub 时，需当前组合加载了 `ctx.mcpManager` 且连接目标（地址+Key）已配置，
+    // 否则在落盘前就明确拒绝，避免写入一个永远起不来的开关。
+    if (normalized.mcpEnabled === true) {
+      const mcpState = backend.readMcpState()
+      if (!mcpState.available) {
+        throw new Error('dsh-magpie-connect: DSH MCP manager is unavailable in this composition')
+      }
+      if (!isConfigured(nextEndpoint)) {
+        throw new Error('dsh-magpie-connect: configure API URL and apiKey before enabling the Magpie MCP hub')
+      }
+    }
     // The submitted allowlist is stored **as submitted**. Dropping ids the
     // current directory does not list would silently undo a delete: a lane's
     // models come and go between refreshes, so the ids removed while the
@@ -416,6 +484,19 @@ async function handleSettingsPost(request: Request): Promise<Response> {
     if (normalized.baseUrl !== undefined || normalized.apiKey !== undefined) {
       await Promise.race([
         backend.catalog.refreshOnce(),
+        new Promise((resolve) => setTimeout(resolve, SAVE_REFRESH_WAIT_MS)),
+      ])
+    }
+    // A save that flips `mcpEnabled` (or moves the endpoint it dials) must let
+    // the async tools/list settle so the reply reflects the real tool set —
+    // bounded, because a slow gateway must not turn a good save into a timeout.
+    if (
+      normalized.mcpEnabled !== undefined ||
+      normalized.baseUrl !== undefined ||
+      normalized.apiKey !== undefined
+    ) {
+      await Promise.race([
+        backend.reconcileMcp(),
         new Promise((resolve) => setTimeout(resolve, SAVE_REFRESH_WAIT_MS)),
       ])
     }
@@ -602,6 +683,34 @@ async function handleSearchTestPost(request: Request): Promise<Response> {
   }
 }
 
+/**
+ * 测试 Magpie MCP Hub：用当前表单（或已保存）的网关地址、Key 直接对
+ * `/mcp/magpie/hub` 做一次 initialize + tools/list 探测。不注册任何实例，
+ * 因此即使开关尚未保存、或当前组合没有 `ctx.mcpManager` 也能验证 Hub 是否可达、
+ * 列出多少工具、以及它是否已在 Magpie 资源库开启。
+ */
+async function handleMcpTestPost(request: Request): Promise<Response> {
+  try {
+    const backend = backendOrThrow()
+    const body = (await readRouteBody(request)) as { baseUrl?: unknown; apiKey?: unknown }
+    const { origin, key } = probeTarget(backend, body)
+    // Probe the same address the registration would use, so the test answers
+    // the question the user is actually asking: "will this work here?"
+    const agent = resolveHubAgent(origin, normalizeMcpAgent(backend.mcpAgent))
+    const local = isLocalGateway(origin)
+    const result = await probeMagpieHub(
+      { baseUrl: origin, apiKey: key },
+      {
+        timeoutMs: Math.min(backend.searchTimeoutMs, MCP_TEST_TIMEOUT_MS),
+        agent: local ? agent : '',
+      },
+    )
+    return routeOk({ ...result, address: local && agent !== '' ? 'agent' : 'all' })
+  } catch (error) {
+    return routeFail(error)
+  }
+}
+
 function routeDefinitions(): RouteDefinition[] {
   return [
     {
@@ -645,6 +754,12 @@ function routeDefinitions(): RouteDefinition[] {
       methods: ['POST'],
       requestBody: 'buffered',
       fetch: (request: Request) => handleSearchTestPost(request),
+    },
+    {
+      path: MCP_TEST_API,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: (request: Request) => handleMcpTestPost(request),
     },
   ]
 }
@@ -743,6 +858,174 @@ interface DshSettingsService {
     >,
     expectedRevision?: number,
   ) => Promise<void>
+}
+
+/**
+ * 把 Magpie MCP Hub 作为 DSH 原生工具接入（`ctx.tools`），并做**客户端按需加载**。
+ *
+ * 为什么不用 `ctx.mcpManager`：管理器的每个实例会把网关的全部工具连同完整
+ * `inputSchema` 注册进来，每轮请求都发一遍——87 个工具约 6.8 万 tokens。而 Magpie
+ * 自带的「按需加载」只对**命名 agent**（且该 agent 在 Magpie 本机被检测到）生效，路由器
+ * 上的 Magpie 看不到 DSH，永远触发不了。于是这里复刻同一规则：
+ *
+ * - 先 `tools/list` 拿到 Hub 的工具数与清单；
+ * - **≤10 个**：逐个注册为 `mcp__magpie__<server>__<tool>`（直连）；
+ * - **>10 个**：只注册 `mcp__magpie__find_tools` + `mcp__magpie__call_tool` 两个代理，
+ *   转发到 Hub 自带的同名工具——所有 schema 都不进请求，模型先查后跑。
+ *
+ * 「默认不启动、勾选并保存后才启动」：只有 `mcpEnabled` 为真且地址+Key 已配置时才去
+ * `tools/list` 并注册；否则注销全部工具，启动时不对网关发起任何 MCP 连接。目标（地址或
+ * Key）变化时按新值重刷工具集；未变化时不动，避免打断。
+ *
+ * 用 `ctx.inject(['tools'])` 接线：没有该服务的精简组合里安静跳过，`readMcpState()`
+ * 报告 `available: false`，设置页据此禁用开关。
+ */
+function installMcpTools(
+  ctx: PluginContext,
+  logger: PluginContext['logger'],
+  options: {
+    resolveEndpoint: () => { baseUrl: string; apiKey: string }
+    enabled: () => boolean
+    toolCallTimeoutMs: number
+    listTimeoutMs: number
+    /** Hub agent segment ('' = all-apps address). */
+    agent: string
+    onAvailableChange: (available: boolean) => void
+    onStateChange: (state: { mode: 'direct' | 'on-demand' | 'passthrough'; hubToolCount: number; registeredCount: number; address?: 'agent' | 'all'; lastError?: string }) => void
+    /** 接管「重新对齐」入口（服务延迟激活时也能拿到真正可用的 reconcile）。 */
+    setReconcile: (reconcile: () => Promise<void>) => void
+  },
+): void {
+  if (typeof ctx.inject !== 'function') return
+  try {
+    ctx.inject(['tools'], (tctx: Record<string, unknown>) => {
+      const scoped = tctx as {
+        effect?: (fn: () => () => void, label?: string) => unknown
+        tools?: DshToolService
+      }
+      const tools = scoped.tools
+      if (tools === undefined || typeof tools.register !== 'function') {
+        logger.warn('dsh-magpie-connect: ctx.tools.register unavailable; Magpie MCP tools disabled')
+        return
+      }
+      options.onAvailableChange(true)
+
+      const registrar = new MagpieToolRegistrar(tools, {
+        getEndpoint: () => options.resolveEndpoint(),
+        toolCallTimeoutMs: options.toolCallTimeoutMs,
+        agent: options.agent,
+      })
+
+      /** 上一次应用的「目标 + 启用状态」指纹，未变则不重刷。 */
+      let currentFingerprint: string | undefined
+      /** 递增代号：慢的 tools/list 回来时若已不是最新一次，丢弃，避免旧结果覆盖新状态。 */
+      let generation = 0
+      /** 当前（或最近一次）应用的在途 Promise：目标未变时让调用方等它落地。 */
+      let pending: Promise<void> = Promise.resolve()
+      let cleanedUp = false
+
+      const clear = (): void => {
+        registrar.unregister()
+        currentFingerprint = undefined
+        options.onStateChange({ mode: 'direct', hubToolCount: 0, registeredCount: 0 })
+      }
+
+      const reconcile = (): Promise<void> => {
+        if (cleanedUp) return Promise.resolve()
+        const enabled = options.enabled()
+        const endpoint = options.resolveEndpoint()
+        const registration = enabled ? buildHubRegistration(endpoint, { toolCallTimeoutMs: options.toolCallTimeoutMs, agent: options.agent }) : null
+        const fingerprint = hubFingerprint(registration)
+        // 未启用 / 未配置：注销全部工具，绝不对网关发起连接。
+        if (fingerprint === undefined) {
+          clear()
+          return Promise.resolve()
+        }
+        // 目标没变：返回在途的那次（可能仍在 tools/list），让保存方能等它落地。
+        if (fingerprint === currentFingerprint) return pending
+        currentFingerprint = fingerprint
+        const myGeneration = ++generation
+        pending = (async () => {
+          try {
+            // Which hub address to ask depends on where Magpie runs.
+            //
+            // Local (`127.0.0.1` / `localhost`): Magpie can see DSH as an
+            // installed agent, so `/mcp/magpie/hub/<agent>` gives that agent's
+            // ticked servers and — past 10 tools — Magpie's own on-demand pair.
+            // Letting Magpie do the on-demand keeps its server catalog in
+            // `find_tools`' description, which is what makes the model aware of
+            // servers like `bookmark` without being told.
+            //
+            // Remote (a router, another machine): Magpie never detects DSH, so
+            // its agent address lists nothing. Use the all-apps address and do
+            // the on-demand here.
+            const local = isLocalGateway(endpoint.baseUrl)
+            const primaryAgent = resolveHubAgent(endpoint.baseUrl, options.agent)
+            let hubTools: RawMcpTool[] = []
+            try {
+              hubTools = await listHubTools(endpoint, {
+                timeoutMs: options.listTimeoutMs,
+                agent: primaryAgent,
+              })
+            } catch (error) {
+              // A local agent address that fails outright is worth one fallback
+              // attempt at the all-apps address before giving up.
+              if (!local || primaryAgent === '') throw error
+              hubTools = []
+            }
+            // An agent address that lists nothing means the Library has no
+            // servers ticked for it (or DSH is not visible there after all).
+            // Falling back to every server beats handing the model no tools.
+            let usedAllApps = false
+            if (local && primaryAgent !== '' && hubTools.length === 0) {
+              hubTools = await listHubTools(endpoint, { timeoutMs: options.listTimeoutMs, agent: '' })
+              usedAllApps = hubTools.length > 0
+              if (usedAllApps) {
+                logger.info(
+                  `dsh-magpie-connect: agent "${primaryAgent}" lists no tools; using the all-apps hub address instead`,
+                )
+              }
+            }
+            if (cleanedUp || myGeneration !== generation) return
+            registrar.apply(hubTools)
+            options.onStateChange({ ...registrar.state(), address: usedAllApps || !local ? 'all' : 'agent' })
+            logger.info(
+              `dsh-magpie-connect: Magpie MCP ${registrar.state().mode} — ${hubTools.length} hub tools from the ${usedAllApps || !local ? 'all-apps' : `agent "${primaryAgent}"`} address`,
+            )
+          } catch (error) {
+            if (cleanedUp || myGeneration !== generation) return
+            // 拉不到工具清单：撤下全部工具并保留错误状态，页面显示连接失败。
+            registrar.unregister()
+            options.onStateChange({ mode: 'direct', hubToolCount: 0, registeredCount: 0, lastError: error instanceof Error ? error.message : String(error) })
+            logger.warn(`dsh-magpie-connect: Magpie MCP tools/list failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        })()
+        return pending
+      }
+
+      const teardown = (): void => {
+        if (cleanedUp) return
+        cleanedUp = true
+        generation += 1
+        registrar.dispose()
+        options.onAvailableChange(false)
+        options.setReconcile(async () => {})
+      }
+
+      if (typeof scoped.effect === 'function') {
+        scoped.effect(() => teardown, 'dsh-magpie-connect: mcp tools')
+      }
+
+      // 首次接线对齐一次，并把 reconcile 交给外部（设置保存后再次调用）。
+      void reconcile()
+      options.setReconcile(() => (cleanedUp ? Promise.resolve() : reconcile()))
+      return () => {
+        options.setReconcile(async () => {})
+      }
+    })
+  } catch (error) {
+    logger.warn(`dsh-magpie-connect: ctx.tools unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
 }
 
 /** 按 LIFO（最新一代优先）尝试让等待队列中的后续代接管 `ctx.web` 注册权。 */
@@ -958,6 +1241,38 @@ export function apply(
   let searchRegistered = false
   let dshSettings: DshSettingsService | undefined
 
+  /** 当前环境是否加载了 `ctx.tools`，以及 Magpie 工具集当前暴露的状态。 */
+  let mcpAvailable = false
+  /** 最近一次成功应用的工具集（直连或按需、Hub 工具数、已注册的 DSH 工具数）。 */
+  let mcpToolState: { mode: 'direct' | 'on-demand' | 'passthrough'; hubToolCount: number; registeredCount: number; address?: 'agent' | 'all'; lastError?: string } = {
+    mode: 'direct',
+    hubToolCount: 0,
+    registeredCount: 0,
+  }
+  /** 设置保存后触发工具集重新对齐（`installMcpTools` 接线后才有实际逻辑）。 */
+  let reconcileMcp: () => Promise<void> = async () => {}
+
+  /** 读取 Magpie MCP 工具集当前状态，供设置页显示。 */
+  const readMcpState = (): McpBindingState => {
+    if (!mcpAvailable) return { available: false, registered: false }
+    const registered = mcpToolState.registeredCount > 0
+    let status: McpServerStatusView | undefined
+    if (registered) {
+      status = { state: 'connected', toolCount: mcpToolState.registeredCount }
+    } else if (store.get().mcpEnabled === true && mcpToolState.lastError !== undefined) {
+      status = { state: 'failed', lastError: mcpToolState.lastError }
+    }
+    return {
+      available: true,
+      registered,
+      mode: mcpToolState.mode,
+      ...(mcpToolState.address !== undefined ? { address: mcpToolState.address } : {}),
+      hubToolCount: mcpToolState.hubToolCount,
+      registeredCount: mcpToolState.registeredCount,
+      ...(status !== undefined ? { status } : {}),
+    }
+  }
+
   /** 读取 DSH `web.searchProvider` 当前绑定状态（单一事实来源，与内置搜索设置页实时同步）。 */
   const readWebSearchState = (): WebSearchBindingState => {
     if (!dshSettings || typeof dshSettings.describe !== 'function') {
@@ -1062,6 +1377,9 @@ export function apply(
     const configured = isConfigured(endpoint)
     catalog.setEndpoint(configured ? endpoint.baseUrl.replace(/\/+$/, '') : '', configured ? endpoint.apiKey : '')
     catalog.setEnabled(page.enabledModels ?? null)
+    // 连接目标或「是否启用 MCP」变化时让工具集对齐：勾选并保存后才真正启动，
+    // 取消勾选或改地址/Key 时即时重刷或注销。未接线时为无害空操作。
+    void reconcileMcp()
   }
   const adapter = new MagpieAdapter(catalog, {
     providerId: cfg.providerId,
@@ -1162,13 +1480,44 @@ export function apply(
     patchSearch,
     searchTimeoutMs: cfg.searchTimeoutMs,
     providerId: cfg.providerId,
+    mcpAgent: cfg.mcpAgent,
     effective,
     effectiveSearch,
     applyPageSettings,
     readWebSearchState,
     setWebSearchActive,
     restoreWebSearchProvider,
+    readMcpState,
+    reconcileMcp: () => reconcileMcp(),
   }
+
+  // Register the Magpie MCP hub as DSH tools with client-side on-demand (never
+  // dials the gateway until the settings page has saved `mcpEnabled: true`).
+  // Newest generation wins: the resolver and enabled-flag read through this
+  // generation's store, so a stale generation cannot resurrect an old endpoint.
+  installMcpTools(ctx, logger, {
+    resolveEndpoint: () => {
+      const backend = currentBackend
+      return backend && backend.providerId === cfg.providerId ? backend.effective() : effective()
+    },
+    enabled: () => {
+      const backend = currentBackend
+      const page = backend && backend.providerId === cfg.providerId ? backend.store.get() : store.get()
+      return page.mcpEnabled === true
+    },
+    toolCallTimeoutMs: cfg.mcpToolCallTimeoutMs,
+    listTimeoutMs: MCP_TEST_TIMEOUT_MS,
+    agent: normalizeMcpAgent(cfg.mcpAgent),
+    onAvailableChange: (available) => {
+      if (currentBackend === null || currentBackend.providerId === cfg.providerId) mcpAvailable = available
+    },
+    onStateChange: (state) => {
+      if (currentBackend === null || currentBackend.providerId === cfg.providerId) mcpToolState = state
+    },
+    setReconcile: (reconcile) => {
+      if (currentBackend === null || currentBackend.providerId === cfg.providerId) reconcileMcp = reconcile
+    },
+  })
 
   installSettingsRoutes(ctx, logger)
   installSearchProvider(ctx, logger, {

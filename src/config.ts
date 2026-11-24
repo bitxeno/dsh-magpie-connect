@@ -73,6 +73,22 @@ export interface DshMagpieConnectConfig {
   searchMaxUses?: number
   /** 单次网页搜索请求超时（毫秒，默认 120000）。 */
   searchTimeoutMs?: number
+  /**
+   * Per-tool-call timeout (ms) for the Magpie MCP hub registered into DSH's
+   * `ctx.mcpManager` when the settings page enables it. Hub tool calls can be
+   * slow (a search, a browser action), so this is looser than DSH's 60s default.
+   * Defaults to 120000.
+   */
+  mcpToolCallTimeoutMs?: number
+  /**
+   * The Magpie Library agent the hub URL names — the segment after
+   * `/mcp/magpie/hub/`. Defaults to `dsh` (Magpie's built-in DSH agent, shown in
+   * the Library as "DeepSeek Harness"). With a named agent, Magpie gives that
+   * agent's ticked servers and, past 10 tools, its on-demand
+   * `find_tools`/`call_tool` pair instead of every schema. Use `''` (or `all`)
+   * for the all-apps address `/mcp/magpie/hub` (every server, no on-demand).
+   */
+  mcpAgent?: string
 }
 
 export const defaults = {
@@ -89,12 +105,21 @@ export const defaults = {
   searchModel: '',
   searchMaxUses: 5,
   searchTimeoutMs: 120_000,
+  mcpToolCallTimeoutMs: 120_000,
+  mcpAgent: '',
 } as const
 
 export type ResolvedConfig = Required<
   Pick<
     DshMagpieConnectConfig,
-    'providerId' | 'refreshSeconds' | 'searchMode' | 'searchModel' | 'searchMaxUses' | 'searchTimeoutMs'
+    | 'providerId'
+    | 'refreshSeconds'
+    | 'searchMode'
+    | 'searchModel'
+    | 'searchMaxUses'
+    | 'searchTimeoutMs'
+    | 'mcpToolCallTimeoutMs'
+    | 'mcpAgent'
   >
 > &
   DshMagpieConnectConfig & { displayName: string; baseUrl: string; apiKey: string; dataDir: string }
@@ -119,5 +144,13 @@ export function resolveConfig(config: DshMagpieConnectConfig = {}): ResolvedConf
       typeof config.searchTimeoutMs === 'number' && Number.isFinite(config.searchTimeoutMs) && config.searchTimeoutMs > 0
         ? Math.floor(config.searchTimeoutMs)
         : defaults.searchTimeoutMs,
+    mcpToolCallTimeoutMs:
+      typeof config.mcpToolCallTimeoutMs === 'number' &&
+      Number.isFinite(config.mcpToolCallTimeoutMs) &&
+      config.mcpToolCallTimeoutMs > 0
+        ? Math.floor(config.mcpToolCallTimeoutMs)
+        : defaults.mcpToolCallTimeoutMs,
+    // Normalized in mcp.ts; here keep the raw string so '' (all-apps) survives.
+    mcpAgent: typeof config.mcpAgent === 'string' ? config.mcpAgent : defaults.mcpAgent,
   }
 }

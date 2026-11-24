@@ -36,6 +36,13 @@ export interface MagpiePageSettings {
    * it. The settings page's switch writes `true`/`false` explicitly.
    */
   showComposerIcon?: boolean
+  /**
+   * Whether the Magpie MCP hub is wired into DSH (`ctx.mcpManager`). Absent
+   * reads as `false`: an MCP server is a live connection to the gateway and must
+   * never start on its own — the settings page only starts it after the user
+   * ticks the box and saves. Only meaningful together with a saved endpoint.
+   */
+  mcpEnabled?: boolean
   /** 网页搜索模式（缺省回退到 patch 配置或默认 `'mcp'`）。 */
   searchMode?: MagpieSearchMode
   /** `'model'` 搜索模式下选定的 Magpie 模型 ID。 */
@@ -64,6 +71,20 @@ export interface EffectiveSearchSettings {
 }
 
 /**
+ * One MCP server's live status, flattened from `ctx.mcpManager.list()` and the
+ * mcp-client connection states into the few cases the settings page renders.
+ * `unknown` covers a composition whose manager reports a shape this plugin does
+ * not know — the page then shows a neutral line instead of a wrong "connected".
+ */
+export interface McpServerStatusView {
+  state: 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'disabled' | 'unknown'
+  /** Registered tool count while connected. */
+  toolCount?: number
+  /** Diagnostic text for a reconnecting/failed instance. */
+  lastError?: string
+}
+
+/**
  * What the settings page is allowed to see. The credential never travels to
  * the browser: the page only learns whether one is stored, so a page that
  * loads (or reloads) cannot leak it through the DOM, devtools, or an XSS in
@@ -77,6 +98,24 @@ export interface MagpieSettingsView {
   inheritedModels: boolean
   /** Whether the composer's routing icon shows (absent reads as true). */
   showComposerIcon: boolean
+  /** 是否已将 Magpie MCP 工具接入 DSH（`ctx.tools`）。 */
+  mcpEnabled: boolean
+  /** 当前 DSH 环境是否加载了 `ctx.tools`（可注册工具）。 */
+  mcpAvailable: boolean
+  /** 是否已注册至少一个 Magpie 工具（已勾选、已配置且已拉到工具清单）。 */
+  mcpRegistered: boolean
+  /** 当前暴露方式：直连、插件按需，或透传 Magpie 自己的按需对。 */
+  mcpMode?: 'direct' | 'on-demand' | 'passthrough'
+  /** 实际使用的 Hub 地址：`agent`（本地，Magpie 按需）或 `all`（全应用）。 */
+  mcpAddress?: 'agent' | 'all'
+  /** Hub 当前列出的工具数（决定是否进入按需模式）。 */
+  mcpHubToolCount?: number
+  /** 已注册到 DSH 的工具数（按需模式下为 2）。 */
+  mcpRegisteredCount?: number
+  /** Magpie MCP 工具集当前状态（未注册时省略）。 */
+  mcpStatus?: McpServerStatusView
+  /** 启用但工具清单拉取失败时的错误文本（供设置页显示）。 */
+  mcpError?: string
   /** 当前生效的网页搜索模式。 */
   searchMode: MagpieSearchMode
   /** 当前生效的搜索模型 ID（`model` 模式下使用）。 */
@@ -179,6 +218,12 @@ export function normalizePageSettings(raw: unknown): MagpiePageSettings {
       throw new Error('dsh-magpie-connect: showComposerIcon must be a boolean')
     }
     out.showComposerIcon = record.showComposerIcon
+  }
+  if (record.mcpEnabled !== undefined) {
+    if (typeof record.mcpEnabled !== 'boolean') {
+      throw new Error('dsh-magpie-connect: mcpEnabled must be a boolean')
+    }
+    out.mcpEnabled = record.mcpEnabled
   }
   if (record.searchMode !== undefined) out.searchMode = normalizeSearchMode(record.searchMode)
   if (record.searchModel !== undefined) {
