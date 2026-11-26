@@ -37,7 +37,6 @@ import {
   MCP_ON_DEMAND_OVER,
   buildHubRegistration,
   hubFingerprint,
-  isLocalGateway,
   listHubTools,
   resolveHubAgent,
   normalizeMcpAgent,
@@ -694,18 +693,18 @@ async function handleMcpTestPost(request: Request): Promise<Response> {
     const backend = backendOrThrow()
     const body = (await readRouteBody(request)) as { baseUrl?: unknown; apiKey?: unknown }
     const { origin, key } = probeTarget(backend, body)
-    // Probe the same address the registration would use, so the test answers
-    // the question the user is actually asking: "will this work here?"
-    const agent = resolveHubAgent(origin, normalizeMcpAgent(backend.mcpAgent))
-    const local = isLocalGateway(origin)
-    const result = await probeMagpieHub(
-      { baseUrl: origin, apiKey: key },
-      {
-        timeoutMs: Math.min(backend.searchTimeoutMs, MCP_TEST_TIMEOUT_MS),
-        agent: local ? agent : '',
-      },
-    )
-    return routeOk({ ...result, address: local && agent !== '' ? 'agent' : 'all' })
+    // Probe the same address the registration would use — the agent address,
+    // falling back to the all-apps address when it lists nothing — so the test
+    // answers the question the user is actually asking: "will this work here?"
+    const agent = resolveHubAgent(normalizeMcpAgent(backend.mcpAgent))
+    const timeoutMs = Math.min(backend.searchTimeoutMs, MCP_TEST_TIMEOUT_MS)
+    let result = await probeMagpieHub({ baseUrl: origin, apiKey: key }, { timeoutMs, agent })
+    let address: 'agent' | 'all' = 'agent'
+    if (agent !== '' && result.ok && result.toolCount === 0) {
+      result = await probeMagpieHub({ baseUrl: origin, apiKey: key }, { timeoutMs, agent: '' })
+      address = 'all'
+    }
+    return routeOk({ ...result, address })
   } catch (error) {
     return routeFail(error)
   }
@@ -947,39 +946,30 @@ function installMcpTools(
         const myGeneration = ++generation
         pending = (async () => {
           try {
-            // Which hub address to ask depends on where Magpie runs.
+            // Ask the agent address first: Magpie gives that agent's tools and,
+            // past ten tools, its own on-demand pair — on a local install and a
+            // remote one alike. Letting Magpie own the on-demand keeps its
+            // server catalog in `find_tools`' description, which is what makes
+            // the model aware of servers like `bookmark` without being told.
             //
-            // Local (`127.0.0.1` / `localhost`): Magpie can see DSH as an
-            // installed agent, so `/mcp/magpie/hub/<agent>` gives that agent's
-            // ticked servers and — past 10 tools — Magpie's own on-demand pair.
-            // Letting Magpie do the on-demand keeps its server catalog in
-            // `find_tools`' description, which is what makes the model aware of
-            // servers like `bookmark` without being told.
-            //
-            // Remote (a router, another machine): Magpie never detects DSH, so
-            // its agent address lists nothing. Use the all-apps address and do
-            // the on-demand here.
-            const local = isLocalGateway(endpoint.baseUrl)
-            const primaryAgent = resolveHubAgent(endpoint.baseUrl, options.agent)
+            // Two cases fall back to the all-apps address (every server, our
+            // own on-demand): an older Magpie that does not know the agent and
+            // lists nothing, and a Library with no servers ticked for it.
+            const primaryAgent = resolveHubAgent(options.agent)
             let hubTools: RawMcpTool[] = []
-            try {
-              hubTools = await listHubTools(endpoint, {
-                timeoutMs: options.listTimeoutMs,
-                agent: primaryAgent,
-              })
-            } catch (error) {
-              // A local agent address that fails outright is worth one fallback
-              // attempt at the all-apps address before giving up.
-              if (!local || primaryAgent === '') throw error
-              hubTools = []
-            }
-            // An agent address that lists nothing means the Library has no
-            // servers ticked for it (or DSH is not visible there after all).
-            // Falling back to every server beats handing the model no tools.
             let usedAllApps = false
-            if (local && primaryAgent !== '' && hubTools.length === 0) {
+            if (primaryAgent !== '') {
+              try {
+                hubTools = await listHubTools(endpoint, { timeoutMs: options.listTimeoutMs, agent: primaryAgent })
+              } catch (error) {
+                // An agent address that fails outright is worth one fallback
+                // attempt before giving up on the whole connection.
+                hubTools = []
+              }
+            }
+            if (primaryAgent === '' || hubTools.length === 0) {
               hubTools = await listHubTools(endpoint, { timeoutMs: options.listTimeoutMs, agent: '' })
-              usedAllApps = hubTools.length > 0
+              usedAllApps = primaryAgent !== ''
               if (usedAllApps) {
                 logger.info(
                   `dsh-magpie-connect: agent "${primaryAgent}" lists no tools; using the all-apps hub address instead`,
@@ -988,9 +978,9 @@ function installMcpTools(
             }
             if (cleanedUp || myGeneration !== generation) return
             registrar.apply(hubTools)
-            options.onStateChange({ ...registrar.state(), address: usedAllApps || !local ? 'all' : 'agent' })
+            options.onStateChange({ ...registrar.state(), address: usedAllApps ? 'all' : 'agent' })
             logger.info(
-              `dsh-magpie-connect: Magpie MCP ${registrar.state().mode} — ${hubTools.length} hub tools from the ${usedAllApps || !local ? 'all-apps' : `agent "${primaryAgent}"`} address`,
+              `dsh-magpie-connect: Magpie MCP ${registrar.state().mode} — ${hubTools.length} hub tools from the ${usedAllApps ? 'all-apps' : `agent "${primaryAgent}"`} address`,
             )
           } catch (error) {
             if (cleanedUp || myGeneration !== generation) return

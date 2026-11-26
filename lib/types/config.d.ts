@@ -68,11 +68,13 @@ export interface DshMagpieConnectConfig {
     mcpToolCallTimeoutMs?: number;
     /**
      * The Magpie Library agent the hub URL names — the segment after
-     * `/mcp/magpie/hub/`. Defaults to `dsh` (Magpie's built-in DSH agent, shown in
-     * the Library as "DeepSeek Harness"). With a named agent, Magpie gives that
-     * agent's ticked servers and, past 10 tools, its on-demand
-     * `find_tools`/`call_tool` pair instead of every schema. Use `''` (or `all`)
-     * for the all-apps address `/mcp/magpie/hub` (every server, no on-demand).
+     * `/mcp/magpie/hub/`. Unset (`''`) means `dsh` (Magpie's built-in DSH agent,
+     * shown in the Library as "DeepSeek Harness"). Magpie v0.1.4808+ answers a
+     * known agent's address with its on-demand set (`find_tools`/`call_tool`/
+     * `run_code`) past 10 tools, on a local or a remote install alike. Set `all`
+     * to force the all-apps address `/mcp/magpie/hub` (every server, the plugin
+     * does the on-demand); an agent address that lists nothing also falls back
+     * there, which is how an older Magpie keeps working.
      */
     mcpAgent?: string;
 }

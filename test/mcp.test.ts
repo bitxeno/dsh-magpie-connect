@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import {
   MAGPIE_HUB_MCP_PATH,
   MAGPIE_MCP_SERVER_NAME,
+  DEFAULT_HUB_AGENT,
   DEFAULT_MCP_AGENT,
   buildHubRegistration,
   hubFingerprint,
-  isLocalGateway,
   magpieHubMcpUrl,
   normalizeMcpAgent,
+  resolveHubAgent,
   probeMagpieHub,
   toStatusView,
 } from '../src/mcp.ts'
@@ -30,13 +31,14 @@ test('magpieHubMcpUrl names the configured agent by default, or the all-apps add
   assert.equal(magpieHubMcpUrl({ baseUrl: 'not a url', apiKey: 'k' }), undefined)
 })
 
-test('normalizeMcpAgent: empty/all is the all-apps address; the Library label maps to the dsh id', () => {
-  assert.equal(DEFAULT_MCP_AGENT, '', 'default is the all-apps address')
-  // Empty (unset) and explicit all-apps forms mean no agent segment.
+test('normalizeMcpAgent keeps unset apart from an explicit all-apps request', () => {
+  // Unset stays '' so resolveHubAgent applies the default agent.
   assert.equal(normalizeMcpAgent(''), '')
   assert.equal(normalizeMcpAgent(undefined), '')
-  assert.equal(normalizeMcpAgent('all'), '')
-  assert.equal(normalizeMcpAgent('-'), '')
+  // An explicit all-apps request becomes the 'all' sentinel, distinct from unset.
+  assert.equal(normalizeMcpAgent('all'), 'all')
+  assert.equal(normalizeMcpAgent('ALL'), 'all')
+  assert.equal(normalizeMcpAgent('-'), 'all')
   // The Library label and spellings map onto the fixed id.
   assert.equal(normalizeMcpAgent('dsh'), 'dsh')
   assert.equal(normalizeMcpAgent('DeepSeek Harness'), 'dsh')
@@ -44,6 +46,14 @@ test('normalizeMcpAgent: empty/all is the all-apps address; the Library label ma
   assert.equal(normalizeMcpAgent('  DeepSeek  Harness '), 'dsh')
   // A genuinely different agent id is passed through.
   assert.equal(normalizeMcpAgent('claude'), 'claude')
+})
+
+test('resolveHubAgent defaults to dsh, honours a configured agent, and maps all -> no agent', () => {
+  assert.equal(DEFAULT_HUB_AGENT, 'dsh')
+  assert.equal(resolveHubAgent(''), 'dsh', 'unset -> the default agent')
+  assert.equal(resolveHubAgent('dsh'), 'dsh')
+  assert.equal(resolveHubAgent('claude'), 'claude')
+  assert.equal(resolveHubAgent('all'), '', 'explicit all -> the all-apps address')
 })
 
 test('buildHubRegistration produces a Streamable HTTP entry with the key as a Bearer header', () => {
@@ -188,15 +198,3 @@ test('probeMagpieHub refuses an unconfigured endpoint without dialling', async (
   assert.equal(called, false)
 })
 
-test('isLocalGateway recognises loopback spellings only', () => {
-  assert.equal(isLocalGateway('http://127.0.0.1:3425/v1'), true)
-  assert.equal(isLocalGateway('http://localhost:3425/v1'), true)
-  assert.equal(isLocalGateway('http://127.0.0.5:3425/v1'), true, 'all of 127/8 is loopback')
-  assert.equal(isLocalGateway('http://[::1]:3425/v1'), true)
-  assert.equal(isLocalGateway('http://0.0.0.0:3425/v1'), true)
-  // A gateway elsewhere never detects DSH as a local agent.
-  assert.equal(isLocalGateway('http://api.lan/v1'), false)
-  assert.equal(isLocalGateway('http://192.168.1.1/v1'), false)
-  assert.equal(isLocalGateway('https://magpie.example.com/v1'), false)
-  assert.equal(isLocalGateway('not a url'), false)
-})

@@ -88,22 +88,26 @@ export declare function callToolDefinition(options: HubToolOptions): DshToolDefi
 /** Which tools the current hub set exposes. */
 export type McpToolMode = 'direct' | 'on-demand' | 'passthrough';
 /**
- * Whether a `tools/list` result is Magpie's *own* on-demand pair.
+ * Whether a `tools/list` result is Magpie's *own* on-demand set.
  *
  * When a named agent has more than 10 tools and Magpie's "Tools on demand" is
- * on, the gateway answers `tools/list` with exactly `find_tools` and
- * `call_tool` (`hubOnDemandSpecs`) instead of every schema. That is the same
- * pair this plugin builds, so a local gateway can simply be passed through:
- * registering its two definitions keeps Magpie's own descriptions — including
- * the server catalog it puts in `find_tools` — instead of duplicating them.
+ * on, the gateway answers `tools/list` with a small proxy set — `find_tools`
+ * and `call_tool`, and on newer Magpies also `run_code` — instead of every
+ * schema. It is the same idea this plugin implements, so such a result is
+ * passed through as-is: registering Magpie's definitions keeps its own
+ * descriptions, including the server catalog it puts in `find_tools`.
+ *
+ * Recognised by shape, not by an exact count, so a gateway that adds another
+ * proxy tool still matches: it must carry `find_tools` and `call_tool`, and
+ * nothing outside that known proxy family.
  */
 export declare function isHubOnDemandPair(tools: readonly RawMcpTool[]): boolean;
 /**
  * Decide how to expose one `tools/list` result.
  *
- * - `passthrough` — the gateway already answered with its on-demand pair (a
- *   local agent address past 10 tools): register its two definitions as they
- *   are, so Magpie's catalog reaches the model unchanged.
+ * - `passthrough` — the gateway already answered with its on-demand proxy set
+ *   (an agent address past 10 tools): register its definitions as they are, so
+ *   Magpie's catalog reaches the model unchanged.
  * - `on-demand` — the gateway listed everything and there are more than
  *   `MCP_ON_DEMAND_OVER` tools: build the pair here, keeping every schema out
  *   of the request. This is what a remote gateway needs, since its agent

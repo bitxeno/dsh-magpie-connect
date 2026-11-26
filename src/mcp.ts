@@ -28,12 +28,10 @@ export const MAGPIE_MCP_SERVER_NAME = 'magpie'
 export const MAGPIE_HUB_MCP_PATH = '/mcp/magpie/hub'
 
 /**
- * The agent segment used when none is configured: empty — the **all-apps**
- * address `/mcp/magpie/hub`, which lists every server in the Library (ticked
- * for any agent or none). This is the default because plugin-side on-demand
- * does not need a per-agent tick, and a router-hosted Magpie never detects DSH
- * as a local agent (so `/mcp/magpie/hub/dsh` would list nothing there). Set a
- * name to use that agent's ticked subset instead.
+ * The fallback agent segment: empty, i.e. the **all-apps** address
+ * `/mcp/magpie/hub` (every server in the Library, ticked for any agent or
+ * none). This is only used when an explicit all-apps request is made or an
+ * agent address lists nothing — the default agent is `DEFAULT_HUB_AGENT`.
  */
 export const DEFAULT_MCP_AGENT = ''
 
@@ -44,63 +42,38 @@ export const DEFAULT_MCP_AGENT = ''
  * Returns `''` for the all-apps address.
  */
 export function normalizeMcpAgent(raw: unknown): string {
-  if (typeof raw !== 'string') return DEFAULT_MCP_AGENT
+  // Unset stays '' so `resolveHubAgent` can apply the default agent; an
+  // explicit all-apps request becomes the sentinel 'all' and is kept distinct.
+  if (typeof raw !== 'string') return ''
   const value = raw.trim()
-  if (value === '') return DEFAULT_MCP_AGENT
-  // The all-apps address is requested explicitly.
-  if (value === '-' || value.toLowerCase() === 'all') return ''
+  if (value === '') return ''
+  if (value === '-' || value.toLowerCase() === 'all') return 'all'
   const lower = value.toLowerCase().replace(/[\s_]+/gu, '-')
   if (lower === 'deepseek-harness' || lower === 'deepseekharness' || lower === 'dsh') return 'dsh'
   return value
 }
 
-/** Loopback hosts: a gateway reached here runs on this machine. */
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'])
+/** The agent the hub is asked for when none is configured. */
+export const DEFAULT_HUB_AGENT = 'dsh'
 
 /**
- * Whether the gateway at this API root runs on **this** machine.
+ * The hub agent segment to ask for.
  *
- * This decides which hub address to use. A local Magpie can see DSH as an
- * installed agent, so `/mcp/magpie/hub/<agent>` gives that agent's ticked
- * servers *and* Magpie's own on-demand pair. A Magpie on another host (a
- * router, say) never detects DSH, so its agent address lists nothing — there
- * the all-apps address plus this plugin's own on-demand is the only thing that
- * works.
- *
- * Judged from the URL alone: no DNS lookup, so the answer is instant and does
- * not change with resolver state. `127.0.0.0/8` counts as loopback.
- * @param baseUrl - the configured API root (`http://127.0.0.1:3425/v1`).
- */
-export function isLocalGateway(baseUrl: string): boolean {
-  let url: URL
-  try {
-    url = new URL(baseUrl)
-  } catch {
-    return false
-  }
-  // `URL` normalises IPv6 to `[::1]`; both spellings are accepted.
-  const host = url.hostname.toLowerCase()
-  if (LOOPBACK_HOSTS.has(host)) return true
-  return /^127\.\d+\.\d+\.\d+$/u.test(host)
-}
-
-/** The agent a **local** gateway is asked for when none is configured. */
-export const LOCAL_DEFAULT_AGENT = 'dsh'
-
-/**
- * The hub agent segment to use for this gateway.
- *
- * Local gateways get a named agent (`dsh` unless configured otherwise) so
- * Magpie itself performs the on-demand switch and keeps its server catalog in
- * `find_tools`. Remote gateways get the all-apps address, because a Magpie on
- * another host never detects DSH and its agent address would list nothing.
- * @param baseUrl - the configured API root.
+ * Magpie answers a named agent's address with that agent's tools, and — past
+ * ten tools, for an agent that is not a self-searching client — its own
+ * on-demand pair (`find_tools`/`call_tool`/`run_code`). This is true whether
+ * Magpie runs on this machine or elsewhere, so the agent address is the default
+ * everywhere: Magpie owns the on-demand switch and keeps its server catalog in
+ * `find_tools`. If that address lists nothing (an older Magpie that does not
+ * know the agent, or a Library with no servers ticked for it), the caller falls
+ * back to the all-apps address.
  * @param configured - the user's `mcpAgent` ('' when unset).
- * @returns the segment: `''` for the all-apps address.
+ * @returns the segment; `''` means the all-apps address was requested explicitly.
  */
-export function resolveHubAgent(baseUrl: string, configured: string): string {
-  if (!isLocalGateway(baseUrl)) return ''
-  return configured === '' ? LOCAL_DEFAULT_AGENT : configured
+export function resolveHubAgent(configured: string): string {
+  // '' = unset → default agent; 'all' = explicit all-apps → '' segment.
+  if (configured === 'all') return ''
+  return configured === '' ? DEFAULT_HUB_AGENT : configured
 }
 
 /**
@@ -498,6 +471,8 @@ export async function callHubTool(
  */
 export const HUB_FIND_TOOL = 'find_tools'
 export const HUB_CALL_TOOL = 'call_tool'
+/** Newer Magpies add a code-running proxy alongside the pair. */
+export const HUB_RUN_CODE_TOOL = 'run_code'
 
 /** Above this many hub tools, expose `find_tools` + `call_tool` instead of every schema. */
 export const MCP_ON_DEMAND_OVER = 10

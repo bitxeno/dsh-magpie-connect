@@ -13,7 +13,7 @@ import {
 } from '../src/mcp-tools.ts'
 import { MCP_ON_DEMAND_OVER, type RawMcpTool } from '../src/mcp.ts'
 
-test('toolModeFor: passthrough for Magpie\'s own pair, else on-demand above 10 tools', () => {
+test('toolModeFor: passthrough for Magpie\'s own on-demand set, else on-demand above 10 tools', () => {
   assert.equal(MCP_ON_DEMAND_OVER, 10)
   const many = (n: number): RawMcpTool[] => Array.from({ length: n }, (_, i) => ({ name: `s__t${i}` }))
   assert.equal(toolModeFor([]), 'direct')
@@ -22,7 +22,9 @@ test('toolModeFor: passthrough for Magpie\'s own pair, else on-demand above 10 t
   assert.equal(toolModeFor(many(87)), 'on-demand')
   // Magpie's own on-demand answer is passed through, not rebuilt.
   assert.equal(toolModeFor([{ name: 'find_tools' }, { name: 'call_tool' }]), 'passthrough')
-  // The pair only counts when it is exactly those two.
+  // Newer Magpies add `run_code` to the set; still passed through.
+  assert.equal(toolModeFor([{ name: 'find_tools' }, { name: 'call_tool' }, { name: 'run_code' }]), 'passthrough')
+  // A real server tool means it is NOT the proxy set — treat as a normal list.
   assert.equal(toolModeFor([{ name: 'find_tools' }]), 'direct')
   assert.equal(toolModeFor([{ name: 'find_tools' }, { name: 'call_tool' }, { name: 'x__y' }]), 'direct')
 })

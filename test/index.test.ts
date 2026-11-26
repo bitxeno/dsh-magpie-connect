@@ -1352,8 +1352,8 @@ test('the MCP test route probes the hub over HTTP without registering anything',
   assert.equal(JSON.stringify(tested.payload).includes('gw-secret'), false)
 })
 
-test('a local gateway uses the agent address and passes Magpie on-demand through; a remote one uses all-apps and does it here', async (t) => {
-  /** A hub that records the path asked and answers with a chosen tool set. */
+test('the agent address is used everywhere and passed through; an older Magpie that lists nothing falls back to all-apps', async (t) => {
+  /** A hub that records the paths asked and answers each with a chosen tool set. */
   const makeHub = (answer: (path: string) => string[]) => {
     const seen: string[] = []
     const server = createServer((req, res) => {
@@ -1379,52 +1379,56 @@ test('a local gateway uses the agent address and passes Magpie on-demand through
     })
     return { server, seen }
   }
+  const lanOrigin = (port: number): string => {
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .find((entry) => entry !== undefined && entry.family === 'IPv4' && !entry.internal)
+    assert.ok(lan, 'a non-loopback IPv4 address is needed for the remote case')
+    return `http://${lan.address}:${port}/v1`
+  }
 
-  // --- local: agent address answers with Magpie's own on-demand pair ---
-  const localHub = makeHub(() => ['find_tools', 'call_tool'])
-  await new Promise<void>((resolve) => localHub.server.listen(0, '127.0.0.1', resolve))
-  t.after(() => localHub.server.close())
-  const localAddr = localHub.server.address()
-  assert.ok(localAddr && typeof localAddr === 'object')
-  const localOrigin = `http://127.0.0.1:${localAddr.port}/v1`
-
-  __resetSettingsRoutes()
-  const localCtx = stubContext()
-  apply(localCtx, { baseUrl: localOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-local-')) })
-  await settled()
-  const onLocal = await callRoute(localCtx.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
-  assert.equal((onLocal.payload as { ok: boolean }).ok, true)
-  await settled()
-  // Asked the agent address, and passed Magpie's pair through unchanged.
-  assert.ok(localHub.seen.some((path) => path === '/mcp/magpie/hub/dsh'), `expected the agent address, saw ${localHub.seen.join(', ')}`)
-  assert.deepEqual([...localCtx.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
-  const localView = (onLocal.payload as { value: Record<string, unknown> }).value
-  assert.equal(localView.mcpMode, 'passthrough')
-  assert.equal(localView.mcpAddress, 'agent')
-
-  // --- remote: agent address is never used; on-demand is built here ---
-  const remoteHub = makeHub((path) => (path === '/mcp/magpie/hub' ? Array.from({ length: 15 }, (_, i) => `s__t${i}`) : []))
-  await new Promise<void>((resolve) => remoteHub.server.listen(0, '0.0.0.0', resolve))
-  t.after(() => remoteHub.server.close())
-  const remoteAddr = remoteHub.server.address()
-  assert.ok(remoteAddr && typeof remoteAddr === 'object')
-  // Reach it through the machine's LAN address so it is not loopback.
-  const lan = Object.values(os.networkInterfaces())
-    .flat()
-    .find((entry) => entry !== undefined && entry.family === 'IPv4' && !entry.internal)
-  assert.ok(lan, 'a non-loopback IPv4 address is needed for the remote half')
-  const remoteOrigin = `http://${lan.address}:${remoteAddr.port}/v1`
+  // --- new Magpie, remote: agent address answers with the proxy set → passthrough ---
+  const remoteNew = makeHub((path) =>
+    path === '/mcp/magpie/hub/dsh' ? ['find_tools', 'call_tool', 'run_code'] : [],
+  )
+  await new Promise<void>((resolve) => remoteNew.server.listen(0, '0.0.0.0', resolve))
+  t.after(() => remoteNew.server.close())
+  const rnAddr = remoteNew.server.address()
+  assert.ok(rnAddr && typeof rnAddr === 'object')
 
   __resetSettingsRoutes()
-  const remoteCtx = stubContext()
-  apply(remoteCtx, { baseUrl: remoteOrigin, apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-remote-')) })
+  const ctxNew = stubContext()
+  apply(ctxNew, { baseUrl: lanOrigin(rnAddr.port), apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-new-')) })
   await settled()
-  const onRemote = await callRoute(remoteCtx.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  const onNew = await callRoute(ctxNew.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
   await settled()
-  // 15 tools → our own on-demand pair, never the agent path.
-  assert.deepEqual([...remoteCtx.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
-  assert.ok(!remoteHub.seen.some((path) => path.startsWith('/mcp/magpie/hub/dsh')), `remote must not use the agent address, saw ${remoteHub.seen.join(', ')}`)
-  const remoteView = (onRemote.payload as { value: Record<string, unknown> }).value
-  assert.equal(remoteView.mcpMode, 'on-demand')
-  assert.equal(remoteView.mcpAddress, 'all')
+  // Remote agent address is used now (not all-apps), and its proxy set passes through.
+  assert.ok(remoteNew.seen.some((path) => path === '/mcp/magpie/hub/dsh'), `expected the agent address remotely, saw ${remoteNew.seen.join(', ')}`)
+  assert.deepEqual([...ctxNew.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools', 'mcp__magpie__run_code'])
+  const newView = (onNew.payload as { value: Record<string, unknown> }).value
+  assert.equal(newView.mcpMode, 'passthrough')
+  assert.equal(newView.mcpAddress, 'agent')
+
+  // --- old Magpie, remote: agent address lists nothing → fall back to all-apps, on-demand here ---
+  const remoteOld = makeHub((path) =>
+    path === '/mcp/magpie/hub' ? Array.from({ length: 15 }, (_, i) => `s__t${i}`) : [],
+  )
+  await new Promise<void>((resolve) => remoteOld.server.listen(0, '0.0.0.0', resolve))
+  t.after(() => remoteOld.server.close())
+  const roAddr = remoteOld.server.address()
+  assert.ok(roAddr && typeof roAddr === 'object')
+
+  __resetSettingsRoutes()
+  const ctxOld = stubContext()
+  apply(ctxOld, { baseUrl: lanOrigin(roAddr.port), apiKey: 'gw-secret', refreshSeconds: 3600, dataDir: mkdtempSync(join(tmpdir(), 'magpie-mcp-old-')) })
+  await settled()
+  const onOld = await callRoute(ctxOld.routes, SETTINGS_API, 'POST', { mcpEnabled: true })
+  await settled()
+  // Tried the agent address first, found nothing, fell back to all-apps.
+  assert.ok(remoteOld.seen.some((path) => path === '/mcp/magpie/hub/dsh'), 'the agent address is tried first')
+  assert.ok(remoteOld.seen.some((path) => path === '/mcp/magpie/hub'), 'and the all-apps address is the fallback')
+  assert.deepEqual([...ctxOld.registeredTools.keys()].sort(), ['mcp__magpie__call_tool', 'mcp__magpie__find_tools'])
+  const oldView = (onOld.payload as { value: Record<string, unknown> }).value
+  assert.equal(oldView.mcpMode, 'on-demand')
+  assert.equal(oldView.mcpAddress, 'all')
 })
